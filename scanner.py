@@ -186,11 +186,12 @@ def calculate_everex(df):
     close = df["close"]
     volume = df["volume"]
 
-    # VOLUME
-    vola = get_average(volume, LOOKBACK, RROF_MA_TYPE)
+    # --- VOLUME ---
+    # Dùng SMA cho LOOKBACK theo đúng cài đặt trên TradingView
+    vola = get_average(volume, LOOKBACK, "SMA")
     vola_n = normalize(volume, vola) * 100
 
-    # PRICE
+    # --- PRICE ---
     bar_spread = close - open_
     bar_range = high - low
     bar_range = bar_range.replace(0, np.nan)
@@ -202,32 +203,49 @@ def calculate_everex(df):
     sign_shift = np.sign(src_shift)
     sign_spread = np.sign(bar_spread)
 
+    # 1
     barclosing = (2 * (close - low) / bar_range * 100) - 100
+
+    # 2
     s2r = bar_spread / bar_range * 100
 
+    # 3
     bar_spread_abs = abs(bar_spread)
-    bar_spread_avg = get_average(bar_spread_abs, LOOKBACK, RROF_MA_TYPE)
+    # Dùng SMA cho LOOKBACK
+    bar_spread_avg = get_average(bar_spread_abs, LOOKBACK, "SMA")
     bar_spread_ratio_n = normalize(bar_spread_abs, bar_spread_avg) * 100 * sign_spread
 
+    # 4
     barclosing_2 = (2 * (close - low.rolling(2).min()) / r2 * 100) - 100
+
+    # 5
     shift2bar_to_r2 = src_shift / r2 * 100
 
+    # 6
     src_shift_abs = abs(src_shift)
-    srcshift_avg = get_average(src_shift_abs, LOOKBACK, RROF_MA_TYPE)
+    # Dùng SMA cho LOOKBACK
+    srcshift_avg = get_average(src_shift_abs, LOOKBACK, "SMA")
     srcshift_ratio_n = normalize(src_shift_abs, srcshift_avg) * 100 * sign_shift
 
+    # --- PRICE NORMALIZED ---
     pricea_n = (barclosing + s2r + bar_spread_ratio_n + barclosing_2 + shift2bar_to_r2 + srcshift_ratio_n) / 6
+
+    # --- BAR FLOW ---
     bar_flow = pricea_n * vola_n / 100
 
+    # --- BULLS / BEARS ---
     bulls = bar_flow.clip(lower=0)
     bears = (-bar_flow.clip(upper=0))
 
+    # Vẫn dùng RROF_MA_TYPE (WMA) cho RROF và Signal
     bulls_avg = get_average(bulls, RROF_LENGTH, RROF_MA_TYPE)
     bears_avg = get_average(bears, RROF_LENGTH, RROF_MA_TYPE)
 
+    # --- RROF ---
     dx = bulls_avg / bears_avg
     rrof = 2 * (100 - 100 / (1 + dx)) - 100
 
+    # RROF SMOOTH & SIGNAL (giữ nguyên WMA)
     rrof_s = get_average(rrof, SMOOTH, "WMA")
     signal = get_average(rrof_s, SIGNAL_LENGTH, SIGNAL_MA_TYPE)
 
@@ -236,7 +254,6 @@ def calculate_everex(df):
     df["SIGNAL"] = signal
 
     return df
-
 # =========================================================
 # TELEGRAM
 # =========================================================
