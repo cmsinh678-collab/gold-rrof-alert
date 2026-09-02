@@ -13,7 +13,7 @@ SYMBOL = "XAUUSD"
 
 # Khung thời gian:
 # 5m, 15m, 30m, 1h, 4h...
-TIMEFRAME = "15m"
+TIMEFRAME = "30m"
 
 CANDLE_LIMIT = 200
 
@@ -105,30 +105,43 @@ def normalize(value, avg):
 # =========================================================
 
 def get_gold_data():
-    API_KEY = os.getenv("TWELVEDATA_API_KEY")  # Thêm secret này vào GitHub
-    url = "https://api.twelvedata.com/time_series"
-    
+
+    # Yahoo Finance symbol
+    url = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/"
+        "GC=F"
+    )
+
     params = {
-        "symbol": "XAU/USD",
         "interval": TIMEFRAME,
-        "outputsize": CANDLE_LIMIT,
-        "apikey": API_KEY
+        "range": "5d"
     }
-    
-    r = requests.get(url, params=params, timeout=60)
+
+    r = requests.get(url, params=params, timeout=20)
+
     r.raise_for_status()
+
     data = r.json()
-    
+
+    result = data["chart"]["result"][0]
+
+    timestamps = result["timestamp"]
+
+    quote = result["indicators"]["quote"][0]
+
     df = pd.DataFrame({
-        "time": pd.to_datetime([d["datetime"] for d in data["values"]]),
-        "open": [float(d["open"]) for d in data["values"]],
-        "high": [float(d["high"]) for d in data["values"]],
-        "low": [float(d["low"]) for d in data["values"]],
-        "close": [float(d["close"]) for d in data["values"]],
-        "volume": [float(d["volume"]) for d in data["values"]]
+        "time": pd.to_datetime(timestamps, unit="s"),
+        "open": quote["open"],
+        "high": quote["high"],
+        "low": quote["low"],
+        "close": quote["close"],
+        "volume": quote["volume"]
     })
-    
+
+    df = df.dropna().reset_index(drop=True)
+
     return df
+
 
 # =========================================================
 # EVEREX CALCULATION
