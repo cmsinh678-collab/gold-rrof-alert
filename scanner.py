@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import time  # <--- Thêm thư viện time để dùng sleep
 
 
 # =========================================================
@@ -13,7 +14,7 @@ SYMBOL = "XAUUSD"
 
 # Khung thời gian:
 # 5m, 15m, 30m, 1h, 4h...
-TIMEFRAME = "30m"
+TIMEFRAME = "15m"
 
 CANDLE_LIMIT = 200
 
@@ -101,46 +102,57 @@ def normalize(value, avg):
 
 
 # =========================================================
-# GET DATA
+# GET DATA (ĐÃ SỬA: THÊM RETRY VÀ TIMEOUT LỚN HƠN)
 # =========================================================
 
 def get_gold_data():
-
-    # Yahoo Finance symbol
-    url = (
-        "https://query1.finance.yahoo.com/v8/finance/chart/"
-        "GC=F"
-    )
-
+    API_KEY = os.getenv("TWELVEDATA_API_KEY")
+    url = "https://api.twelvedata.com/time_series"
+    
     params = {
+        "symbol": "XAU/USD",
         "interval": TIMEFRAME,
-        "range": "5d"
+        "outputsize": CANDLE_LIMIT,
+        "apikey": API_KEY
     }
-
-    r = requests.get(url, params=params, timeout=20)
-
-    r.raise_for_status()
-
-    data = r.json()
-
-    result = data["chart"]["result"][0]
-
-    timestamps = result["timestamp"]
-
-    quote = result["indicators"]["quote"][0]
-
-    df = pd.DataFrame({
-        "time": pd.to_datetime(timestamps, unit="s"),
-        "open": quote["open"],
-        "high": quote["high"],
-        "low": quote["low"],
-        "close": quote["close"],
-        "volume": quote["volume"]
-    })
-
-    df = df.dropna().reset_index(drop=True)
-
-    return df
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            print(f"Đang gọi Twelve Data lần {attempt+1}/{max_retries}...")
+            r = requests.get(url, params=params, timeout=60)  # Tăng timeout lên 60s
+            r.raise_for_status()
+            data = r.json()
+            
+            # Kiểm tra lỗi từ Twelve Data
+            if "status" in data and data["status"] == "error":
+                print(f"Twelve Data báo lỗi: {data.get('message', 'Unknown error')}")
+                if attempt < max_retries - 1:
+                    print("Chờ 5 giây rồi thử lại...")
+                    time.sleep(5)
+                    continue
+                else:
+                    raise Exception(f"Twelve Data error: {data.get('message')}")
+            
+            df = pd.DataFrame({
+                "time": pd.to_datetime([d["datetime"] for d in data["values"]]),
+                "open": [float(d["open"]) for d in data["values"]],
+                "high": [float(d["high"]) for d in data["values"]],
+                "low": [float(d["low"]) for d in data["values"]],
+                "close": [float(d["close"]) for d in data["values"]],
+                "volume": [float(d["volume"]) for d in data["values"]]
+            })
+            
+            print(f"Đã lấy thành công {len(df)} dòng dữ liệu.")
+            return df
+            
+        except requests.exceptions.RequestException as e:
+            print(f"Lỗi lần {attempt+1}: {e}")
+            if attempt < max_retries - 1:
+                print("Chờ 5 giây rồi thử lại...")
+                time.sleep(5)
+            else:
+                raise  # Lần cuối vẫn lỗi thì báo lỗi cuối cùng
 
 
 # =========================================================
