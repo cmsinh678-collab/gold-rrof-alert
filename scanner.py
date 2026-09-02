@@ -115,7 +115,7 @@ def get_gold_data():
         "apikey": API_KEY
     }
     
-    r = requests.get(url, params=params, timeout=20)
+    r = requests.get(url, params=params, timeout=60)
     r.raise_for_status()
     data = r.json()
     
