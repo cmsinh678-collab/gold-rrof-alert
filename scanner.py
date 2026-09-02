@@ -9,7 +9,7 @@ from datetime import datetime
 # CONFIG
 # =========================================================
 SYMBOL = "XAUUSD"
-TIMEFRAME = "15m"
+TIMEFRAME = "30min"
 CANDLE_LIMIT = 200
 
 # =========================================================
