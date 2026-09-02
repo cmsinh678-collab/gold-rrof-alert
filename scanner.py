@@ -55,51 +55,127 @@ def normalize(value, avg):
         default=0.10
     )
 
-# =========================================================
-# GET DATA (Twelve Data + Retry + Header Auth)
-# =========================================================
 def get_gold_data():
+
     API_KEY = os.getenv("TWELVEDATA_API_KEY")
+
+    if not API_KEY:
+        raise Exception("❌ Không tìm thấy TWELVEDATA_API_KEY trong GitHub Secrets")
+
     url = "https://api.twelvedata.com/time_series"
-    
-    headers = {
-        "Authorization": f"apikey {API_KEY}"  # <--- Xác thực qua Header
-    }
+
     params = {
         "symbol": "XAU/USD",
         "interval": TIMEFRAME,
         "outputsize": CANDLE_LIMIT,
-        # "apikey": API_KEY  # <--- Đã bỏ dòng này
+
+        # QUAN TRỌNG
+        "apikey": API_KEY
     }
 
     for attempt in range(3):
+
         try:
-            print(f"🔄 Đang gọi Twelve Data lần {attempt+1}/3...")
-            r = requests.get(url, headers=headers, params=params, timeout=60)  # <--- Thêm headers vào đây
+
+            print(f"🔄 Đang gọi Twelve Data lần {attempt + 1}/3...")
+
+            r = requests.get(
+                url,
+                params=params,
+                timeout=60
+            )
+
+            # In URL nhưng KHÔNG in API key
+            print("HTTP Status:", r.status_code)
+
+            # Nếu lỗi thì in nội dung lỗi của Twelve Data
+            if r.status_code != 200:
+                print("❌ API Response:", r.text)
+
             r.raise_for_status()
+
             data = r.json()
 
-            if "status" in data and data["status"] == "error":
-                raise Exception(f"Twelve Data error: {data.get('message')}")
+            # Kiểm tra lỗi API
+            if data.get("status") == "error":
+
+                raise Exception(
+                    f"Twelve Data Error: {data.get('message')}"
+                )
+
+            if "values" not in data:
+
+                raise Exception(
+                    f"Không có dữ liệu values: {data}"
+                )
+
+            values = data["values"]
 
             df = pd.DataFrame({
-                "time": pd.to_datetime([d["datetime"] for d in data["values"]]),
-                "open": [float(d["open"]) for d in data["values"]],
-                "high": [float(d["high"]) for d in data["values"]],
-                "low": [float(d["low"]) for d in data["values"]],
-                "close": [float(d["close"]) for d in data["values"]],
-                "volume": [float(d["volume"]) for d in data["values"]]
+                "time": pd.to_datetime(
+                    [d["datetime"] for d in values]
+                ),
+
+                "open": [
+                    float(d["open"])
+                    for d in values
+                ],
+
+                "high": [
+                    float(d["high"])
+                    for d in values
+                ],
+
+                "low": [
+                    float(d["low"])
+                    for d in values
+                ],
+
+                "close": [
+                    float(d["close"])
+                    for d in values
+                ],
+
+                "volume": [
+                    float(d.get("volume", 0) or 0)
+                    for d in values
+                ]
             })
-            print(f"✅ Lấy thành công {len(df)} dòng dữ liệu.")
+
+            # Twelve Data trả dữ liệu mới → cũ
+            # Ta đổi thành cũ → mới
+            df = df.sort_values(
+                "time"
+            ).reset_index(
+                drop=True
+            )
+
+            print(
+                f"✅ Lấy thành công {len(df)} cây nến."
+            )
+
             return df
 
+
         except Exception as e:
-            print(f"❌ Lỗi lần {attempt+1}: {e}")
+
+            print(
+                f"❌ Lỗi lần {attempt + 1}: {e}"
+            )
+
             if attempt < 2:
-                print("⏳ Chờ 5s rồi thử lại...")
+
+                print(
+                    "⏳ Chờ 5 giây..."
+                )
+
                 time.sleep(5)
+
             else:
-                raise Exception("Không thể lấy dữ liệu sau 3 lần thử.")
+
+                raise Exception(
+                    "Không thể lấy dữ liệu sau 3 lần thử."
+                )
 # =========================================================
 # EVEREX CALCULATION
 # =========================================================
