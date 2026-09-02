@@ -4,7 +4,7 @@ on:
 
   schedule:
 
-    # Chạy mỗi 5 phút
+    # Chạy mỗi x phút
     - cron: "*/15 * * * *"
 
   # Cho phép bấm RUN thủ công
