@@ -56,22 +56,26 @@ def normalize(value, avg):
     )
 
 # =========================================================
-# GET DATA (Twelve Data + Retry)
+# GET DATA (Twelve Data + Retry + Header Auth)
 # =========================================================
 def get_gold_data():
     API_KEY = os.getenv("TWELVEDATA_API_KEY")
     url = "https://api.twelvedata.com/time_series"
+    
+    headers = {
+        "Authorization": f"apikey {API_KEY}"  # <--- Xác thực qua Header
+    }
     params = {
         "symbol": "XAU/USD",
         "interval": TIMEFRAME,
         "outputsize": CANDLE_LIMIT,
-        "apikey": API_KEY
+        # "apikey": API_KEY  # <--- Đã bỏ dòng này
     }
 
     for attempt in range(3):
         try:
             print(f"🔄 Đang gọi Twelve Data lần {attempt+1}/3...")
-            r = requests.get(url, params=params, timeout=60)
+            r = requests.get(url, headers=headers, params=params, timeout=60)  # <--- Thêm headers vào đây
             r.raise_for_status()
             data = r.json()
 
@@ -96,7 +100,6 @@ def get_gold_data():
                 time.sleep(5)
             else:
                 raise Exception("Không thể lấy dữ liệu sau 3 lần thử.")
-
 # =========================================================
 # EVEREX CALCULATION
 # =========================================================
