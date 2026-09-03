@@ -168,27 +168,198 @@ def normalize(value, average):
 
 
 # ============================================================
-# DOWNLOAD BINANCE DATA
+# DOWNLOAD OKX DATA (CHÍNH)
+# ============================================================
+
+def download_okx():
+    print()
+    print("=" * 70)
+    print("📥 OKX XAUUSDT PERPETUAL")
+    print("=" * 70)
+
+    KLINE_URL = "https://www.okx.com/api/v5/market/candles"
+    TICKER_URL = "https://www.okx.com/api/v5/market/ticker"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+
+    params_kline = {
+        "instId": "XAUUSDT-SWAP",
+        "bar": "30m",
+        "limit": str(CANDLE_LIMIT)
+    }
+
+    params_ticker = {
+        "instId": "XAUUSDT-SWAP"
+    }
+
+    print(f"📊 Symbol : XAUUSDT-SWAP (OKX)")
+    print(f"⏱ TF     : 30m")
+    print(f"📈 Limit  : {CANDLE_LIMIT}")
+
+    try:
+        # 1. Current price
+        print()
+        print("▶️ Fetching OKX ticker...")
+        
+        ticker = requests.get(
+            TICKER_URL,
+            params=params_ticker,
+            headers=headers,
+            timeout=15
+        )
+        ticker.raise_for_status()
+        ticker_data = ticker.json()
+        
+        if ticker_data["code"] == "0":
+            live_price = float(ticker_data["data"][0]["last"])
+            print(f"💰 OKX LIVE PRICE : {live_price:.2f}")
+        else:
+            print("❌ OKX ticker error:", ticker_data)
+            return None
+
+        # 2. KLINES
+        print("▶️ Fetching OKX klines...")
+        
+        r = requests.get(
+            KLINE_URL,
+            params=params_kline,
+            headers=headers,
+            timeout=15
+        )
+        r.raise_for_status()
+        data = r.json()
+
+        if data["code"] != "0":
+            print("❌ OKX klines error:", data)
+            return None
+
+        candles = data["data"]
+        if not candles:
+            print("❌ OKX không trả về dữ liệu")
+            return None
+
+        print(f"✅ OKX trả về {len(candles)} candles")
+
+        # OKX trả về: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
+        df = pd.DataFrame(candles, columns=[
+            "timestamp", "open", "high", "low", "close", "volume",
+            "volCcy", "volCcyQuote", "confirm"
+        ])
+
+        # Convert numeric
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # Timestamp (ms)
+        df["timestamp"] = pd.to_datetime(
+            df["timestamp"].astype(np.int64),
+            unit="ms",
+            utc=True
+        )
+
+        df = df.sort_values("timestamp").reset_index(drop=True)
+
+        # ============================================================
+        # VALIDATION
+        # ============================================================
+
+        if df.empty:
+            print("❌ DataFrame rỗng")
+            return None
+
+        if df[["open", "high", "low", "close", "volume"]].isna().any().any():
+            print("❌ OHLCV chứa NaN")
+            return None
+
+        if (df["volume"] < 0).any():
+            print("❌ Volume không hợp lệ")
+            return None
+
+        # ============================================================
+        # DATA INFO
+        # ============================================================
+
+        print()
+        print("=" * 70)
+        print("📊 OKX DATA INFO")
+        print("=" * 70)
+
+        print(f"✅ Candles : {len(df)}")
+        print(f"📅 From    : {df['timestamp'].iloc[0]}")
+        print(f"📅 To      : {df['timestamp'].iloc[-1]}")
+
+        print()
+        print("📋 LAST 5 CANDLES")
+        print(df.tail(5)[[
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+        ]].to_string(index=False))
+
+        # ============================================================
+        # LIVE VS CANDLE
+        # ============================================================
+
+        last_candle = df.iloc[-1]
+
+        print()
+        print("=" * 70)
+        print("💰 PRICE CHECK")
+        print("=" * 70)
+
+        print(f"OKX LIVE PRICE      : {live_price:.2f}")
+        print(f"Last KLINE CLOSE    : {last_candle['close']:.2f}")
+        print(f"Previous KLINE      : {df.iloc[-2]['close']:.2f}")
+        print(f"Difference LIVE/KLINE : {live_price - last_candle['close']:+.2f}")
+
+        print()
+        print(f"Last candle time : {last_candle['timestamp']}")
+        print(f"Last candle close: {last_candle['close']:.2f}")
+        print(f"Last candle vol  : {last_candle['volume']:,.2f}")
+
+        # ============================================================
+        # VOLUME STATISTICS
+        # ============================================================
+
+        print()
+        print("=" * 70)
+        print("🔊 VOLUME STATISTICS")
+        print("=" * 70)
+
+        print(f"Volume min  : {df['volume'].min():,.2f}")
+        print(f"Volume max  : {df['volume'].max():,.2f}")
+        print(f"Volume avg  : {df['volume'].mean():,.2f}")
+        print(f"Volume zero : {(df['volume'] == 0).sum()}")
+
+        return df
+
+    except Exception as e:
+        print(f"❌ OKX API error: {e}")
+        return None
+
+
+# ============================================================
+# DOWNLOAD BINANCE DATA (BACKUP)
 # ============================================================
 
 def download_binance():
-
     print()
     print("=" * 70)
-    print("📥 BINANCE FUTURES XAUUSDT")
+    print("📥 BINANCE FUTURES XAUUSDT (BACKUP)")
     print("=" * 70)
 
     KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
     TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/price"
 
-    # ============================================================
-    # QUAN TRỌNG: Thêm headers để tránh bị chặn 451
-    # ============================================================
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
     }
 
     params = {
@@ -202,272 +373,98 @@ def download_binance():
     print(f"📈 Limit  : {CANDLE_LIMIT}")
 
     try:
-
-        # ====================================================
         # 1. CURRENT PRICE
-        # ====================================================
-
         ticker = requests.get(
             TICKER_URL,
             params={"symbol": SYMBOL},
             headers=headers,
             timeout=15
         )
-
         ticker.raise_for_status()
-
         ticker_data = ticker.json()
-
         live_price = float(ticker_data["price"])
-
         print()
         print(f"💰 Binance LIVE PRICE : {live_price:.2f}")
 
-        # ====================================================
         # 2. KLINES
-        # ====================================================
-
         r = requests.get(
             KLINE_URL,
             params=params,
             headers=headers,
             timeout=15
         )
-
         r.raise_for_status()
-
         data = r.json()
 
         if not data:
             print("❌ Binance không trả về KLINE")
             return None
 
-    except requests.exceptions.RequestException as e:
-
-        print(f"❌ Binance API error: {e}")
-
-        return None
-
     except Exception as e:
-
-        print(f"❌ Binance data error: {e}")
-
+        print(f"❌ Binance API error: {e}")
         return None
 
-    # ============================================================
-    # DATAFRAME
-    # ============================================================
-
+    # DataFrame
     columns = [
-        "timestamp",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "close_time",
-        "quote_volume",
-        "trades",
-        "taker_buy_volume",
-        "taker_buy_quote_volume",
-        "ignore"
+        "timestamp", "open", "high", "low", "close", "volume",
+        "close_time", "quote_volume", "trades",
+        "taker_buy_volume", "taker_buy_quote_volume", "ignore"
     ]
 
-    df = pd.DataFrame(
-        data,
-        columns=columns
-    )
+    df = pd.DataFrame(data, columns=columns)
 
-    # ============================================================
-    # NUMERIC
-    # ============================================================
+    # Numeric
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    numeric_columns = [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "quote_volume",
-        "trades",
-        "taker_buy_volume",
-        "taker_buy_quote_volume"
-    ]
+    # Timestamp
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    df = df.sort_values("timestamp").reset_index(drop=True)
 
-    for col in numeric_columns:
-
-        df[col] = pd.to_numeric(
-            df[col],
-            errors="coerce"
-        )
-
-    # ============================================================
-    # TIMESTAMP
-    # ============================================================
-
-    df["timestamp"] = pd.to_datetime(
-        df["timestamp"],
-        unit="ms",
-        utc=True
-    )
-
-    df["close_time"] = pd.to_datetime(
-        df["close_time"],
-        unit="ms",
-        utc=True
-    )
-
-    df = (
-        df
-        .sort_values("timestamp")
-        .drop_duplicates("timestamp")
-        .reset_index(drop=True)
-    )
-
-    # ============================================================
-    # VALIDATION
-    # ============================================================
-
-    if df.empty:
-
-        print("❌ DataFrame rỗng")
-
+    # Validation
+    if df.empty or df[["open", "high", "low", "close", "volume"]].isna().any().any():
         return None
 
-    if df[
-        ["open", "high", "low", "close", "volume"]
-    ].isna().any().any():
-
-        print("❌ OHLCV chứa NaN")
-
-        return None
-
-    if (df["volume"] < 0).any():
-
-        print("❌ Volume không hợp lệ")
-
-        return None
-
-    # ============================================================
-    # DATA INFO
-    # ============================================================
-
+    # Info
     print()
     print("=" * 70)
     print("📊 BINANCE DATA INFO")
     print("=" * 70)
-
     print(f"✅ Candles : {len(df)}")
-
-    print(
-        f"📅 From    : {df['timestamp'].iloc[0]}"
-    )
-
-    print(
-        f"📅 To      : {df['timestamp'].iloc[-1]}"
-    )
-
-    print()
-    print("📋 LAST 5 CANDLES")
-
-    print(
-        df.tail(5)[[
-            "timestamp",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume"
-        ]].to_string(index=False)
-    )
-
-    # ============================================================
-    # LIVE VS CANDLE
-    # ============================================================
-
-    last_candle = df.iloc[-1]
-
-    print()
-    print("=" * 70)
-    print("💰 PRICE CHECK")
-    print("=" * 70)
-
-    print(
-        f"Binance LIVE PRICE : {live_price:.2f}"
-    )
-
-    print(
-        f"Last KLINE CLOSE   : {last_candle['close']:.2f}"
-    )
-
-    print(
-        f"Previous KLINE     : {df.iloc[-2]['close']:.2f}"
-    )
-
-    print(
-        f"Difference LIVE/KLINE : "
-        f"{live_price - last_candle['close']:+.2f}"
-    )
-
-    print()
-    print(
-        f"Last candle time : {last_candle['timestamp']}"
-    )
-
-    print(
-        f"Last candle close: {last_candle['close']:.2f}"
-    )
-
-    print(
-        f"Last candle vol  : {last_candle['volume']:,.2f}"
-    )
-
-    # ============================================================
-    # VOLUME CHECK
-    # ============================================================
-
-    print()
-    print("=" * 70)
-    print("🔊 VOLUME STATISTICS")
-    print("=" * 70)
-
-    print(f"Volume min  : {df['volume'].min():,.2f}")
-    print(f"Volume max  : {df['volume'].max():,.2f}")
-    print(f"Volume avg  : {df['volume'].mean():,.2f}")
-    print(f"Volume zero : {(df['volume'] == 0).sum()}")
-
-    # ============================================================
-    # IMPORTANT
-    # ============================================================
-
-    # Không dùng live price để tính EVEREX.
-    #
-    # EVEREX phải dùng OHLCV của các cây nến.
-    #
-    # [-1] = cây M30 hiện tại
-    # [-2] = cây M30 đã đóng
+    print(f"📅 From    : {df['timestamp'].iloc[0]}")
+    print(f"📅 To      : {df['timestamp'].iloc[-1]}")
 
     return df
 
 
 # ============================================================
-# LOAD DATA
+# LOAD DATA - OKX CHÍNH, BINANCE BACKUP
 # ============================================================
 
 def load_data():
-
-    df = download_binance()
-
-    if df is None:
-        return None
-
-    # Chỉ lấy CANDLE_LIMIT nến cuối
-    df = df.tail(CANDLE_LIMIT).copy()
-
+    # Thử OKX trước
+    df = download_okx()
+    
+    if df is not None:
+        print()
+        print("✅ Using OKX data")
+        df = df.tail(CANDLE_LIMIT).copy()
+        print(f"✅ Using last {len(df)} candles")
+        return df.reset_index(drop=True)
+    
+    # Nếu OKX lỗi, thử Binance
     print()
-    print(f"✅ Using last {len(df)} candles")
-
-    return df.reset_index(drop=True)
+    print("⚠️ OKX failed, trying Binance...")
+    df = download_binance()
+    
+    if df is not None:
+        print()
+        print("✅ Using Binance data")
+        df = df.tail(CANDLE_LIMIT).copy()
+        print(f"✅ Using last {len(df)} candles")
+        return df.reset_index(drop=True)
+    
+    return None
 
 
 # ============================================================
@@ -764,18 +761,8 @@ def calculate_everex(df):
 
 def check_signal(df):
 
-    # Cần ít nhất vài nến
     if len(df) < 10:
-
         return None
-
-    # --------------------------------------------------------
-    # Dùng nến ĐÃ ĐÓNG
-    #
-    # [-1] = nến đang chạy (chưa đóng)
-    # [-2] = nến vừa đóng
-    # [-3] = nến đóng trước đó
-    # --------------------------------------------------------
 
     previous = df.iloc[-3]
     current = df.iloc[-2]
@@ -785,46 +772,15 @@ def check_signal(df):
     print("📊 RROF STATUS")
     print("=" * 70)
 
-    print(
-        f"Previous: RROF_S={previous['RROF_S']:.6f}"
-        f" SIGNAL={previous['SIGNAL']:.6f}"
-    )
+    print(f"Previous: RROF_S={previous['RROF_S']:.6f} SIGNAL={previous['SIGNAL']:.6f}")
+    print(f"Current : RROF_S={current['RROF_S']:.6f} SIGNAL={current['SIGNAL']:.6f}")
+    print(f"Volume  : {current['volume']:,.4f}")
+    print(f"Price   : {current['close']:.2f}")
 
-    print(
-        f"Current : RROF_S={current['RROF_S']:.6f}"
-        f" SIGNAL={current['SIGNAL']:.6f}"
-    )
-
-    print(
-        f"Volume  : {current['volume']:,.4f}"
-    )
-    
-    print(
-        f"Price   : {current['close']:.2f}"
-    )
-
-    # --------------------------------------------------------
-    # CROSS UP
-    # --------------------------------------------------------
-
-    if (
-        previous["RROF_S"] <= previous["SIGNAL"]
-        and
-        current["RROF_S"] > current["SIGNAL"]
-    ):
-
+    if previous["RROF_S"] <= previous["SIGNAL"] and current["RROF_S"] > current["SIGNAL"]:
         return "LONG"
 
-    # --------------------------------------------------------
-    # CROSS DOWN
-    # --------------------------------------------------------
-
-    if (
-        previous["RROF_S"] >= previous["SIGNAL"]
-        and
-        current["RROF_S"] < current["SIGNAL"]
-    ):
-
+    if previous["RROF_S"] >= previous["SIGNAL"] and current["RROF_S"] < current["SIGNAL"]:
         return "SHORT"
 
     return None
@@ -837,87 +793,50 @@ def check_signal(df):
 def main():
 
     print()
-    print("🚀 XAUUSDT RROF BINANCE SCANNER")
-    print("================================")
+    print("🚀 XAUUSDT RROF SCANNER (OKX + Binance)")
+    print("========================================")
 
     df = load_data()
 
     if df is None:
-
-        print("❌ Không lấy được dữ liệu")
-
+        print("❌ Không lấy được dữ liệu từ OKX hoặc Binance")
         sys.exit(1)
-
-    # --------------------------------------------------------
-    # EVEREX
-    # --------------------------------------------------------
 
     df = calculate_everex(df)
 
-    # --------------------------------------------------------
-    # CHECK NaN
-    # --------------------------------------------------------
-
-    valid = df[
-        ["RROF", "RROF_S", "SIGNAL"]
-    ].dropna()
+    valid = df[["RROF", "RROF_S", "SIGNAL"]].dropna()
 
     if len(valid) < 10:
-
-        print(
-            "❌ Không đủ dữ liệu để tính EVEREX"
-        )
-
+        print("❌ Không đủ dữ liệu để tính EVEREX")
         sys.exit(1)
-
-    # --------------------------------------------------------
-    # SIGNAL
-    # --------------------------------------------------------
 
     signal = check_signal(df)
 
-    # --------------------------------------------------------
-    # TELEGRAM
-    # --------------------------------------------------------
-
     if signal == "LONG":
-
         message = (
             "🟢 <b>XAUUSDT RROF LONG</b>\n\n"
-            f"⏱ Timeframe: 30m (Binance)\n"
-            f"📊 RROF Smooth: "
-            f"{df.iloc[-2]['RROF_S']:.2f}\n"
-            f"📈 Signal: "
-            f"{df.iloc[-2]['SIGNAL']:.2f}\n"
-            f"💰 Close: "
-            f"{df.iloc[-2]['close']:.2f}\n"
-            f"📊 Volume: "
-            f"{df.iloc[-2]['volume']:,.2f}\n\n"
+            f"⏱ Timeframe: 30m\n"
+            f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
+            f"📈 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
+            f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
+            f"📊 Volume: {df.iloc[-2]['volume']:,.2f}\n\n"
             "🔔 RROF Smooth CROSS UP Signal"
         )
-
         send_telegram(message)
 
     elif signal == "SHORT":
-
         message = (
             "🔴 <b>XAUUSDT RROF SHORT</b>\n\n"
-            f"⏱ Timeframe: 30m (Binance)\n"
-            f"📊 RROF Smooth: "
-            f"{df.iloc[-2]['RROF_S']:.2f}\n"
-            f"📉 Signal: "
-            f"{df.iloc[-2]['SIGNAL']:.2f}\n"
-            f"💰 Close: "
-            f"{df.iloc[-2]['close']:.2f}\n"
-            f"📊 Volume: "
-            f"{df.iloc[-2]['volume']:,.2f}\n\n"
+            f"⏱ Timeframe: 30m\n"
+            f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
+            f"📉 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
+            f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
+            f"📊 Volume: {df.iloc[-2]['volume']:,.2f}\n\n"
             "🔔 RROF Smooth CROSS DOWN Signal"
         )
-
         send_telegram(message)
 
     else:
-
         print()
         print("🚫 NO NEW SIGNAL")
 
