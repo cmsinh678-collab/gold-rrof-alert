@@ -4,7 +4,6 @@ import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
-import time
 
 # ============================================================
 # CONFIG
@@ -13,7 +12,7 @@ import time
 SYMBOL = "XAUUSDT"
 
 # Timeframe: 30m
-TIMEFRAME = "30m"
+TIMEFRAME = "30min"
 
 # Số nến lấy về
 CANDLE_LIMIT = 500
@@ -169,58 +168,61 @@ def normalize(value, average):
 
 
 # ============================================================
-# DOWNLOAD MEXC DATA
+# DOWNLOAD HUOBI DATA
 # ============================================================
 
-def download_mexc():
+def download_huobi():
     print()
     print("=" * 70)
-    print("📥 MEXC XAUUSDT PERPETUAL")
+    print("📥 HUOBI XAUUSDT")
     print("=" * 70)
 
-    # MEXC API cho perpetual futures
-    KLINE_URL = "https://api.mexc.com/api/v3/klines"
-    TICKER_URL = "https://api.mexc.com/api/v3/ticker/price"
+    KLINE_URL = "https://api.huobi.pro/market/history/kline"
+    TICKER_URL = "https://api.huobi.pro/market/detail/merged"
 
-    # Headers mạnh hơn để tránh bị chặn
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive",
-        "Cache-Control": "no-cache",
+        "Accept-Encoding": "gzip, deflate",
     }
 
     params_kline = {
-        "symbol": "XAUUSDT",
-        "interval": TIMEFRAME,
-        "limit": CANDLE_LIMIT
+        "symbol": "xauusdt",
+        "period": TIMEFRAME,
+        "size": CANDLE_LIMIT
     }
 
-    print(f"📊 Symbol : XAUUSDT (MEXC)")
-    print(f"⏱ TF     : 30m")
+    params_ticker = {
+        "symbol": "xauusdt"
+    }
+
+    print(f"📊 Symbol : XAUUSDT (Huobi)")
+    print(f"⏱ TF     : 30min")
     print(f"📈 Limit  : {CANDLE_LIMIT}")
 
     try:
         # 1. Current price
         print()
-        print("▶️ Fetching MEXC ticker...")
+        print("▶️ Fetching Huobi ticker...")
         
         ticker = requests.get(
             TICKER_URL,
-            params={"symbol": "XAUUSDT"},
+            params=params_ticker,
             headers=headers,
             timeout=15
         )
         ticker.raise_for_status()
         ticker_data = ticker.json()
         
-        live_price = float(ticker_data["price"])
-        print(f"💰 MEXC LIVE PRICE : {live_price:.2f}")
+        if ticker_data["status"] == "ok":
+            live_price = float(ticker_data["tick"]["close"])
+            print(f"💰 Huobi LIVE PRICE : {live_price:.2f}")
+        else:
+            print(f"❌ Huobi ticker error: {ticker_data}")
+            return None
 
         # 2. KLINES
-        print("▶️ Fetching MEXC klines...")
+        print("▶️ Fetching Huobi klines...")
         
         r = requests.get(
             KLINE_URL,
@@ -231,26 +233,36 @@ def download_mexc():
         r.raise_for_status()
         data = r.json()
 
-        if not data:
-            print("❌ MEXC không trả về dữ liệu")
+        if data["status"] != "ok":
+            print(f"❌ Huobi klines error: {data}")
             return None
 
-        print(f"✅ MEXC trả về {len(data)} candles")
+        candles = data["data"]
+        if not candles:
+            print("❌ Huobi không trả về dữ liệu")
+            return None
 
-        # MEXC trả về: [openTime, open, high, low, close, volume, closeTime, quoteVolume, trades, takerBuyBase, takerBuyQuote, ignore]
-        df = pd.DataFrame(data, columns=[
-            "timestamp", "open", "high", "low", "close", "volume",
-            "close_time", "quote_volume", "trades",
-            "taker_buy_volume", "taker_buy_quote_volume", "ignore"
+        print(f"✅ Huobi trả về {len(candles)} candles")
+
+        # Huobi trả về: [id, open, close, low, high, amount, vol, count]
+        df = pd.DataFrame(candles, columns=[
+            "id", "open", "close", "low", "high", "amount", "volume", "count"
         ])
+
+        # Rename để chuẩn hóa
+        df = df.rename(columns={
+            "id": "timestamp",
+            "close": "close",
+            "amount": "quote_volume"
+        })
 
         # Convert numeric
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # Timestamp (ms)
+        # Timestamp (seconds -> milliseconds)
         df["timestamp"] = pd.to_datetime(
-            df["timestamp"].astype(np.int64),
+            df["timestamp"].astype(np.int64) * 1000,
             unit="ms",
             utc=True
         )
@@ -279,7 +291,7 @@ def download_mexc():
 
         print()
         print("=" * 70)
-        print("📊 MEXC DATA INFO")
+        print("📊 HUOBI DATA INFO")
         print("=" * 70)
 
         print(f"✅ Candles : {len(df)}")
@@ -308,9 +320,9 @@ def download_mexc():
         print("💰 PRICE CHECK")
         print("=" * 70)
 
-        print(f"MEXC LIVE PRICE     : {live_price:.2f}")
-        print(f"Last KLINE CLOSE    : {last_candle['close']:.2f}")
-        print(f"Previous KLINE      : {df.iloc[-2]['close']:.2f}")
+        print(f"Huobi LIVE PRICE     : {live_price:.2f}")
+        print(f"Last KLINE CLOSE     : {last_candle['close']:.2f}")
+        print(f"Previous KLINE       : {df.iloc[-2]['close']:.2f}")
         print(f"Difference LIVE/KLINE : {live_price - last_candle['close']:+.2f}")
 
         print()
@@ -334,144 +346,25 @@ def download_mexc():
 
         return df
 
-    except requests.exceptions.RequestException as e:
-        print(f"❌ MEXC API error: {e}")
-        return None
-
     except Exception as e:
-        print(f"❌ MEXC data error: {e}")
+        print(f"❌ Huobi API error: {e}")
         return None
 
 
 # ============================================================
-# DOWNLOAD BINANCE DATA (BACKUP)
-# ============================================================
-
-def download_binance():
-    print()
-    print("=" * 70)
-    print("📥 BINANCE FUTURES XAUUSDT (BACKUP)")
-    print("=" * 70)
-
-    KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
-    TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/price"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-    }
-
-    params = {
-        "symbol": "XAUUSDT",
-        "interval": "30m",
-        "limit": CANDLE_LIMIT
-    }
-
-    print(f"📊 Symbol : XAUUSDT (Binance)")
-    print(f"⏱ TF     : 30m")
-    print(f"📈 Limit  : {CANDLE_LIMIT}")
-
-    try:
-        # 1. CURRENT PRICE
-        print()
-        print("▶️ Fetching Binance ticker...")
-        
-        ticker = requests.get(
-            TICKER_URL,
-            params={"symbol": "XAUUSDT"},
-            headers=headers,
-            timeout=15
-        )
-        ticker.raise_for_status()
-        ticker_data = ticker.json()
-        live_price = float(ticker_data["price"])
-        print(f"💰 Binance LIVE PRICE : {live_price:.2f}")
-
-        # 2. KLINES
-        print("▶️ Fetching Binance klines...")
-        
-        r = requests.get(
-            KLINE_URL,
-            params=params,
-            headers=headers,
-            timeout=15
-        )
-        r.raise_for_status()
-        data = r.json()
-
-        if not data:
-            print("❌ Binance không trả về KLINE")
-            return None
-
-        print(f"✅ Binance trả về {len(data)} candles")
-
-    except Exception as e:
-        print(f"❌ Binance API error: {e}")
-        return None
-
-    # DataFrame
-    columns = [
-        "timestamp", "open", "high", "low", "close", "volume",
-        "close_time", "quote_volume", "trades",
-        "taker_buy_volume", "taker_buy_quote_volume", "ignore"
-    ]
-
-    df = pd.DataFrame(data, columns=columns)
-
-    # Numeric
-    for col in ["open", "high", "low", "close", "volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # Timestamp
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-    df = df.sort_values("timestamp").reset_index(drop=True)
-
-    # Validation
-    if df.empty or df[["open", "high", "low", "close", "volume"]].isna().any().any():
-        return None
-
-    # Info
-    print()
-    print("=" * 70)
-    print("📊 BINANCE DATA INFO")
-    print("=" * 70)
-    print(f"✅ Candles : {len(df)}")
-    print(f"📅 From    : {df['timestamp'].iloc[0]}")
-    print(f"📅 To      : {df['timestamp'].iloc[-1]}")
-
-    return df
-
-
-# ============================================================
-# LOAD DATA - MEXC CHÍNH, BINANCE BACKUP
+# LOAD DATA
 # ============================================================
 
 def load_data():
-    # Thử MEXC trước
-    df = download_mexc()
+    df = download_huobi()
     
-    if df is not None:
-        print()
-        print("✅ Using MEXC data")
-        df = df.tail(CANDLE_LIMIT).copy()
-        print(f"✅ Using last {len(df)} candles")
-        return df.reset_index(drop=True)
+    if df is None:
+        return None
     
-    # Nếu MEXC lỗi, thử Binance
+    df = df.tail(CANDLE_LIMIT).copy()
     print()
-    print("⚠️ MEXC failed, trying Binance...")
-    df = download_binance()
-    
-    if df is not None:
-        print()
-        print("✅ Using Binance data")
-        df = df.tail(CANDLE_LIMIT).copy()
-        print(f"✅ Using last {len(df)} candles")
-        return df.reset_index(drop=True)
-    
-    return None
+    print(f"✅ Using last {len(df)} candles")
+    return df.reset_index(drop=True)
 
 
 # ============================================================
@@ -800,13 +693,13 @@ def check_signal(df):
 def main():
 
     print()
-    print("🚀 XAUUSDT RROF SCANNER (MEXC + Binance)")
-    print("=========================================")
+    print("🚀 XAUUSDT RROF HUOBI SCANNER")
+    print("==============================")
 
     df = load_data()
 
     if df is None:
-        print("❌ Không lấy được dữ liệu từ MEXC hoặc Binance")
+        print("❌ Không lấy được dữ liệu từ Huobi")
         sys.exit(1)
 
     df = calculate_everex(df)
@@ -822,7 +715,7 @@ def main():
     if signal == "LONG":
         message = (
             "🟢 <b>XAUUSDT RROF LONG</b>\n\n"
-            f"⏱ Timeframe: 30m\n"
+            f"⏱ Timeframe: 30m (Huobi)\n"
             f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
             f"📈 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
             f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
@@ -834,7 +727,7 @@ def main():
     elif signal == "SHORT":
         message = (
             "🔴 <b>XAUUSDT RROF SHORT</b>\n\n"
-            f"⏱ Timeframe: 30m\n"
+            f"⏱ Timeframe: 30m (Huobi)\n"
             f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
             f"📉 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
             f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
