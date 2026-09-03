@@ -313,7 +313,21 @@ def download_dukascopy():
 # ============================================================
 # LOAD DATA
 # ============================================================
+print("\n========== DEBUG DUKASCOPY ==========")
 
+print(df.tail(10)[[
+    "timestamp",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume"
+]].to_string(index=False))
+
+print("\nLAST CLOSE =", df.iloc[-1]["close"])
+print("LAST TIME  =", df.iloc[-1]["timestamp"])
+
+print("====================================\n")
 def load_dukascopy_data():
 
     file = download_dukascopy()
