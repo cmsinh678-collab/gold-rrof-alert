@@ -195,13 +195,22 @@ def download_dukascopy():
     print(f"📅 To   : {date_to}")
     print(f"⏱ TF   : {TIMEFRAME}")
 
-    # Xóa file cũ
-    for f in glob.glob("xauusd-*.csv"):
+    # Thư mục download
+    download_dir = "download"
+
+    # Tạo thư mục download
+    os.makedirs(download_dir, exist_ok=True)
+
+    # Xóa file cũ trong thư mục download
+    for f in glob.glob(os.path.join(download_dir, "*.csv")):
         try:
             os.remove(f)
         except Exception:
             pass
 
+    # ============================================================
+    # QUAN TRỌNG: THÊM -v ĐỂ BẬT VOLUME
+    # ============================================================
     command = [
         "npx",
         "--yes",
@@ -214,12 +223,23 @@ def download_dukascopy():
         str(date_to),
         "-t",
         TIMEFRAME,
+        # BẬT VOLUME
+        "-v",
+        # Volume units thay vì millions
+        "-vu",
+        "units",
         "-f",
-        "csv"
+        "csv",
+        "-dir",
+        download_dir
     ]
 
     print()
-    print("▶️ Downloading Dukascopy...")
+    print("▶️ Downloading Dukascopy WITH VOLUME...")
+    print()
+    print("Command:")
+    print(" ".join(command))
+    print()
 
     try:
 
@@ -251,23 +271,22 @@ def download_dukascopy():
 
         return None
 
-    # Tìm CSV
-    files = glob.glob("*.csv")
+    # ============================================================
+    # TÌM CSV TRONG THƯ MỤC download
+    # ============================================================
 
-    # Loại bỏ file không liên quan
-    files = [
-        f for f in files
-        if "xauusd" in f.lower()
-    ]
+    files = glob.glob(os.path.join(download_dir, "*.csv"))
 
     if not files:
 
-        print("❌ Không tìm thấy file XAUUSD CSV")
+        print("❌ Không tìm thấy file CSV trong download/")
 
+        print()
         print("Files hiện có:")
 
-        for f in glob.glob("*"):
-            print("   ", f)
+        for root, dirs, filenames in os.walk("."):
+            for filename in filenames:
+                print("   ", os.path.join(root, filename))
 
         return None
 
@@ -277,42 +296,18 @@ def download_dukascopy():
     for f in files:
         print("   ", f)
 
-    # Nếu chỉ một file
-    if len(files) == 1:
+    # ============================================================
+    # CHỌN FILE MỚI NHẤT
+    # ============================================================
 
-        return files[0]
+    files.sort(key=os.path.getmtime, reverse=True)
+    selected = files[0]
 
-    # Ghép nhiều file
-    dfs = []
+    print()
+    print("✅ Selected:")
+    print(selected)
 
-    for f in files:
-
-        try:
-
-            temp = pd.read_csv(f)
-
-            dfs.append(temp)
-
-        except Exception as e:
-
-            print(f"⚠️ Không đọc được {f}: {e}")
-
-    if not dfs:
-        return None
-
-    df = pd.concat(
-        dfs,
-        ignore_index=True
-    )
-
-    output = "xauusd_combined.csv"
-
-    df.to_csv(
-        output,
-        index=False
-    )
-
-    return output
+    return selected
 
 
 # ============================================================
@@ -341,8 +336,13 @@ def load_dukascopy_data():
 
         return None
 
-    print("Columns:")
+    print()
+    print("📋 Columns:")
     print(df.columns.tolist())
+
+    print()
+    print("📋 First rows:")
+    print(df.head(3).to_string())
 
     # --------------------------------------------------------
     # timestamp
@@ -409,9 +409,20 @@ def load_dukascopy_data():
         subset=["datetime"]
     )
 
-    # --------------------------------------------------------
-    # VOLUME CHECK
-    # --------------------------------------------------------
+    # ============================================================
+    # VOLUME CHECK - CHI TIẾT HƠN
+    # ============================================================
+
+    print()
+    print("=" * 70)
+    print("🔊 VOLUME CHECK")
+    print("=" * 70)
+
+    print(f"Volume NaN  : {df['volume'].isna().sum()}")
+    print(f"Volume min  : {df['volume'].min():,.2f}")
+    print(f"Volume max  : {df['volume'].max():,.2f}")
+    print(f"Volume avg  : {df['volume'].mean():,.2f}")
+    print(f"Volume zero : {(df['volume'] == 0).sum()}")
 
     if df["volume"].isna().any():
 
@@ -433,20 +444,11 @@ def load_dukascopy_data():
         f" → {df['datetime'].iloc[-1]}"
     )
 
-    print(
-        f"📊 Volume min : {df['volume'].min():,.4f}"
-    )
-
-    print(
-        f"📊 Volume max : {df['volume'].max():,.4f}"
-    )
-
-    print(
-        f"📊 Volume avg : {df['volume'].mean():,.4f}"
-    )
-
     # Chỉ lấy 250 nến cuối
     df = df.tail(CANDLE_LIMIT).copy()
+
+    print()
+    print(f"✅ Using last {len(df)} candles")
 
     return df.reset_index(drop=True)
 
