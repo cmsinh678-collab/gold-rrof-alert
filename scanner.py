@@ -1,28 +1,21 @@
 import os
 import sys
-import subprocess
-import glob
-import shutil
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta, timezone
-
+from datetime import datetime, timezone, timedelta
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-SYMBOL = "XAUUSD"
+SYMBOL = "XAUUSDT"
 
-# M30
-TIMEFRAME = "m30"
+# Binance interval: 30m
+TIMEFRAME = "30m"
 
-# Lấy dư dữ liệu để EVEREX có đủ dữ liệu tính toán
-DOWNLOAD_DAYS = 10
-
-# Số nến cuối cùng dùng tính toán
-CANDLE_LIMIT = 250
+# Số nến lấy về
+CANDLE_LIMIT = 500
 
 # EVEREX
 RROF_LENGTH = 10
@@ -175,290 +168,274 @@ def normalize(value, average):
 
 
 # ============================================================
-# DOWNLOAD DUKASCOPY DATA
+# DOWNLOAD BINANCE DATA
 # ============================================================
 
-def download_dukascopy():
+def download_binance():
 
     print()
     print("=" * 70)
-    print("📥 DUKASCOPY XAUUSD")
+    print("📥 BINANCE FUTURES XAUUSDT")
     print("=" * 70)
 
-    # UTC
-    now = datetime.now(timezone.utc)
+    KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
+    TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/price"
 
-    date_to = now.date() + timedelta(days=1)
-    date_from = now.date() - timedelta(days=DOWNLOAD_DAYS)
+    params = {
+        "symbol": SYMBOL,
+        "interval": TIMEFRAME,
+        "limit": CANDLE_LIMIT
+    }
 
-    print(f"📅 From : {date_from}")
-    print(f"📅 To   : {date_to}")
-    print(f"⏱ TF   : {TIMEFRAME}")
-
-    # Thư mục download
-    download_dir = "download"
-
-    # Tạo thư mục download
-    os.makedirs(download_dir, exist_ok=True)
-
-    # Xóa file cũ trong thư mục download
-    for f in glob.glob(os.path.join(download_dir, "*.csv")):
-        try:
-            os.remove(f)
-        except Exception:
-            pass
-
-    # ============================================================
-    # QUAN TRỌNG: THÊM -v ĐỂ BẬT VOLUME
-    # ============================================================
-    command = [
-        "npx",
-        "--yes",
-        "dukascopy-node",
-        "-i",
-        "xauusd",
-        "-from",
-        str(date_from),
-        "-to",
-        str(date_to),
-        "-t",
-        TIMEFRAME,
-        # BẬT VOLUME
-        "-v",
-        # Volume units thay vì millions
-        "-vu",
-        "units",
-        "-f",
-        "csv",
-        "-dir",
-        download_dir
-    ]
-
-    print()
-    print("▶️ Downloading Dukascopy WITH VOLUME...")
-    print()
-    print("Command:")
-    print(" ".join(command))
-    print()
+    print(f"📊 Symbol : {SYMBOL}")
+    print(f"⏱ TF     : {TIMEFRAME}")
+    print(f"📈 Limit  : {CANDLE_LIMIT}")
 
     try:
 
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=180
+        # ====================================================
+        # 1. CURRENT PRICE
+        # ====================================================
+
+        ticker = requests.get(
+            TICKER_URL,
+            params={"symbol": SYMBOL},
+            timeout=15
         )
 
-        print(result.stdout)
+        ticker.raise_for_status()
 
-        if result.returncode != 0:
+        ticker_data = ticker.json()
 
-            print("❌ Dukascopy download failed")
-            print(result.stderr)
-
-            return None
-
-    except subprocess.TimeoutExpired:
-
-        print("❌ Download timeout")
-
-        return None
-
-    except Exception as e:
-
-        print("❌ Download error:", e)
-
-        return None
-
-    # ============================================================
-    # TÌM CSV TRONG THƯ MỤC download
-    # ============================================================
-
-    files = glob.glob(os.path.join(download_dir, "*.csv"))
-
-    if not files:
-
-        print("❌ Không tìm thấy file CSV trong download/")
+        live_price = float(ticker_data["price"])
 
         print()
-        print("Files hiện có:")
+        print(f"💰 Binance LIVE PRICE : {live_price:.2f}")
 
-        for root, dirs, filenames in os.walk("."):
-            for filename in filenames:
-                print("   ", os.path.join(root, filename))
+        # ====================================================
+        # 2. KLINES
+        # ====================================================
+
+        r = requests.get(
+            KLINE_URL,
+            params=params,
+            timeout=15
+        )
+
+        r.raise_for_status()
+
+        data = r.json()
+
+        if not data:
+            print("❌ Binance không trả về KLINE")
+            return None
+
+    except requests.exceptions.RequestException as e:
+
+        print(f"❌ Binance API error: {e}")
 
         return None
-
-    print()
-    print("📁 CSV found:")
-
-    for f in files:
-        print("   ", f)
-
-    # ============================================================
-    # CHỌN FILE MỚI NHẤT
-    # ============================================================
-
-    files.sort(key=os.path.getmtime, reverse=True)
-    selected = files[0]
-
-    print()
-    print("✅ Selected:")
-    print(selected)
-
-    return selected
-
-
-# ============================================================
-# LOAD DATA
-# ============================================================
-print("\n========== DEBUG DUKASCOPY ==========")
-
-print(df.tail(10)[[
-    "timestamp",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume"
-]].to_string(index=False))
-
-print("\nLAST CLOSE =", df.iloc[-1]["close"])
-print("LAST TIME  =", df.iloc[-1]["timestamp"])
-
-print("====================================\n")
-def load_dukascopy_data():
-
-    file = download_dukascopy()
-
-    if not file:
-        return None
-
-    print()
-    print("=" * 70)
-    print("📊 LOAD DUKASCOPY DATA")
-    print("=" * 70)
-
-    try:
-
-        df = pd.read_csv(file)
 
     except Exception as e:
 
-        print("❌ CSV read error:", e)
+        print(f"❌ Binance data error: {e}")
 
         return None
 
-    print()
-    print("📋 Columns:")
-    print(df.columns.tolist())
+    # ============================================================
+    # DATAFRAME
+    # ============================================================
 
-    print()
-    print("📋 First rows:")
-    print(df.head(3).to_string())
-
-    # --------------------------------------------------------
-    # timestamp
-    # --------------------------------------------------------
-
-    if "timestamp" not in df.columns:
-
-        print("❌ Không có timestamp")
-
-        return None
-
-    df["datetime"] = pd.to_datetime(
-        df["timestamp"],
-        unit="ms",
-        utc=True
-    )
-
-    # --------------------------------------------------------
-    # numeric
-    # --------------------------------------------------------
-
-    required = [
+    columns = [
+        "timestamp",
         "open",
         "high",
         "low",
         "close",
-        "volume"
+        "volume",
+        "close_time",
+        "quote_volume",
+        "trades",
+        "taker_buy_volume",
+        "taker_buy_quote_volume",
+        "ignore"
     ]
 
-    for col in required:
+    df = pd.DataFrame(
+        data,
+        columns=columns
+    )
 
-        if col not in df.columns:
+    # ============================================================
+    # NUMERIC
+    # ============================================================
 
-            print(
-                f"❌ Thiếu cột bắt buộc: {col}"
-            )
+    numeric_columns = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume",
+        "trades",
+        "taker_buy_volume",
+        "taker_buy_quote_volume"
+    ]
 
-            return None
+    for col in numeric_columns:
 
         df[col] = pd.to_numeric(
             df[col],
             errors="coerce"
         )
 
-    # --------------------------------------------------------
-    # REMOVE INVALID
-    # --------------------------------------------------------
+    # ============================================================
+    # TIMESTAMP
+    # ============================================================
 
-    df = df.dropna(
-        subset=[
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume"
-        ]
+    df["timestamp"] = pd.to_datetime(
+        df["timestamp"],
+        unit="ms",
+        utc=True
     )
 
-    df = df.sort_values(
-        "datetime"
+    df["close_time"] = pd.to_datetime(
+        df["close_time"],
+        unit="ms",
+        utc=True
     )
 
-    df = df.drop_duplicates(
-        subset=["datetime"]
+    df = (
+        df
+        .sort_values("timestamp")
+        .drop_duplicates("timestamp")
+        .reset_index(drop=True)
     )
 
     # ============================================================
-    # VOLUME CHECK - CHI TIẾT HƠN
+    # VALIDATION
     # ============================================================
 
-    print()
-    print("=" * 70)
-    print("🔊 VOLUME CHECK")
-    print("=" * 70)
+    if df.empty:
 
-    print(f"Volume NaN  : {df['volume'].isna().sum()}")
-    print(f"Volume min  : {df['volume'].min():,.2f}")
-    print(f"Volume max  : {df['volume'].max():,.2f}")
-    print(f"Volume avg  : {df['volume'].mean():,.2f}")
-    print(f"Volume zero : {(df['volume'] == 0).sum()}")
-
-    if df["volume"].isna().any():
-
-        print("❌ Volume chứa NaN")
+        print("❌ DataFrame rỗng")
 
         return None
 
-    if (df["volume"] <= 0).all():
+    if df[
+        ["open", "high", "low", "close", "volume"]
+    ].isna().any().any():
+
+        print("❌ OHLCV chứa NaN")
+
+        return None
+
+    if (df["volume"] < 0).any():
 
         print("❌ Volume không hợp lệ")
 
         return None
 
+    # ============================================================
+    # DATA INFO
+    # ============================================================
+
     print()
-    print(f"✅ Loaded: {len(df)} candles")
+    print("=" * 70)
+    print("📊 BINANCE DATA INFO")
+    print("=" * 70)
+
+    print(f"✅ Candles : {len(df)}")
 
     print(
-        f"📅 {df['datetime'].iloc[0]}"
-        f" → {df['datetime'].iloc[-1]}"
+        f"📅 From    : {df['timestamp'].iloc[0]}"
     )
 
-    # Chỉ lấy 250 nến cuối
+    print(
+        f"📅 To      : {df['timestamp'].iloc[-1]}"
+    )
+
+    print()
+    print("📋 LAST 5 CANDLES")
+
+    print(
+        df.tail(5)[[
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+        ]].to_string(index=False)
+    )
+
+    # ============================================================
+    # LIVE VS CANDLE
+    # ============================================================
+
+    last_candle = df.iloc[-1]
+
+    print()
+    print("=" * 70)
+    print("💰 PRICE CHECK")
+    print("=" * 70)
+
+    print(
+        f"Binance LIVE PRICE : {live_price:.2f}"
+    )
+
+    print(
+        f"Last KLINE CLOSE   : {last_candle['close']:.2f}"
+    )
+
+    print(
+        f"Previous KLINE     : {df.iloc[-2]['close']:.2f}"
+    )
+
+    print(
+        f"Difference LIVE/KLINE : "
+        f"{live_price - last_candle['close']:+.2f}"
+    )
+
+    print()
+    print(
+        f"Last candle time : {last_candle['timestamp']}"
+    )
+
+    print(
+        f"Last candle close: {last_candle['close']:.2f}"
+    )
+
+    print(
+        f"Last candle vol  : {last_candle['volume']:,.2f}"
+    )
+
+    # ============================================================
+    # IMPORTANT
+    # ============================================================
+
+    # Không dùng live price để tính EVEREX.
+    #
+    # EVEREX phải dùng OHLCV của các cây nến.
+    #
+    # [-1] = cây M30 hiện tại
+    # [-2] = cây M30 đã đóng
+
+    return df
+
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+def load_data():
+
+    df = download_binance()
+
+    if df is None:
+        return None
+
+    # Chỉ lấy CANDLE_LIMIT nến cuối
     df = df.tail(CANDLE_LIMIT).copy()
 
     print()
@@ -769,11 +746,9 @@ def check_signal(df):
     # --------------------------------------------------------
     # Dùng nến ĐÃ ĐÓNG
     #
-    # -1 = nến mới nhất
-    # -2 = nến trước
-    #
-    # Vì dữ liệu Dukascopy có thể đang chứa nến hiện tại,
-    # chúng ta dùng -3 và -2 để tránh nến đang chạy.
+    # [-1] = nến đang chạy (chưa đóng)
+    # [-2] = nến vừa đóng
+    # [-3] = nến đóng trước đó
     # --------------------------------------------------------
 
     previous = df.iloc[-3]
@@ -785,19 +760,21 @@ def check_signal(df):
     print("=" * 70)
 
     print(
-        "Previous:"
-        f" RROF_S={previous['RROF_S']:.6f}"
+        f"Previous: RROF_S={previous['RROF_S']:.6f}"
         f" SIGNAL={previous['SIGNAL']:.6f}"
     )
 
     print(
-        "Current :"
-        f" RROF_S={current['RROF_S']:.6f}"
+        f"Current : RROF_S={current['RROF_S']:.6f}"
         f" SIGNAL={current['SIGNAL']:.6f}"
     )
 
     print(
         f"Volume  : {current['volume']:,.4f}"
+    )
+    
+    print(
+        f"Price   : {current['close']:.2f}"
     )
 
     # --------------------------------------------------------
@@ -834,10 +811,10 @@ def check_signal(df):
 def main():
 
     print()
-    print("🚀 GOLD RROF DUKASCOPY SCANNER")
+    print("🚀 XAUUSDT RROF BINANCE SCANNER")
     print("================================")
 
-    df = load_dukascopy_data()
+    df = load_data()
 
     if df is None:
 
@@ -880,8 +857,8 @@ def main():
     if signal == "LONG":
 
         message = (
-            "🟢 <b>XAUUSD RROF LONG</b>\n\n"
-            f"⏱ Timeframe: {TIMEFRAME.upper()}\n"
+            "🟢 <b>XAUUSDT RROF LONG</b>\n\n"
+            f"⏱ Timeframe: 30m (Binance)\n"
             f"📊 RROF Smooth: "
             f"{df.iloc[-2]['RROF_S']:.2f}\n"
             f"📈 Signal: "
@@ -898,8 +875,8 @@ def main():
     elif signal == "SHORT":
 
         message = (
-            "🔴 <b>XAUUSD RROF SHORT</b>\n\n"
-            f"⏱ Timeframe: {TIMEFRAME.upper()}\n"
+            "🔴 <b>XAUUSDT RROF SHORT</b>\n\n"
+            f"⏱ Timeframe: 30m (Binance)\n"
             f"📊 RROF Smooth: "
             f"{df.iloc[-2]['RROF_S']:.2f}\n"
             f"📉 Signal: "
