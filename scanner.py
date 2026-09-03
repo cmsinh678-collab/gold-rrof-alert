@@ -4,6 +4,7 @@ import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
+import time
 
 # ============================================================
 # CONFIG
@@ -12,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 SYMBOL = "XAUUSDT"
 
 # Timeframe: 30m
-TIMEFRAME = "30"
+TIMEFRAME = "30m"
 
 # Số nến lấy về
 CANDLE_LIMIT = 500
@@ -168,62 +169,58 @@ def normalize(value, average):
 
 
 # ============================================================
-# DOWNLOAD BYBIT DATA
+# DOWNLOAD MEXC DATA
 # ============================================================
 
-def download_bybit():
+def download_mexc():
     print()
     print("=" * 70)
-    print("📥 BYBIT XAUUSDT PERPETUAL")
+    print("📥 MEXC XAUUSDT PERPETUAL")
     print("=" * 70)
 
-    KLINE_URL = "https://api.bybit.com/v5/market/kline"
-    TICKER_URL = "https://api.bybit.com/v5/market/tickers"
+    # MEXC API cho perpetual futures
+    KLINE_URL = "https://api.mexc.com/api/v3/klines"
+    TICKER_URL = "https://api.mexc.com/api/v3/ticker/price"
 
+    # Headers mạnh hơn để tránh bị chặn
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+        "Cache-Control": "no-cache",
     }
 
     params_kline = {
-        "category": "linear",
         "symbol": "XAUUSDT",
         "interval": TIMEFRAME,
         "limit": CANDLE_LIMIT
     }
 
-    params_ticker = {
-        "category": "linear",
-        "symbol": "XAUUSDT"
-    }
-
-    print(f"📊 Symbol : XAUUSDT (Bybit)")
+    print(f"📊 Symbol : XAUUSDT (MEXC)")
     print(f"⏱ TF     : 30m")
     print(f"📈 Limit  : {CANDLE_LIMIT}")
 
     try:
         # 1. Current price
         print()
-        print("▶️ Fetching Bybit ticker...")
+        print("▶️ Fetching MEXC ticker...")
         
         ticker = requests.get(
             TICKER_URL,
-            params=params_ticker,
+            params={"symbol": "XAUUSDT"},
             headers=headers,
             timeout=15
         )
         ticker.raise_for_status()
         ticker_data = ticker.json()
         
-        if ticker_data["retCode"] == 0:
-            live_price = float(ticker_data["result"]["list"][0]["lastPrice"])
-            print(f"💰 Bybit LIVE PRICE : {live_price:.2f}")
-        else:
-            print(f"❌ Bybit ticker error: {ticker_data}")
-            return None
+        live_price = float(ticker_data["price"])
+        print(f"💰 MEXC LIVE PRICE : {live_price:.2f}")
 
         # 2. KLINES
-        print("▶️ Fetching Bybit klines...")
+        print("▶️ Fetching MEXC klines...")
         
         r = requests.get(
             KLINE_URL,
@@ -234,20 +231,17 @@ def download_bybit():
         r.raise_for_status()
         data = r.json()
 
-        if data["retCode"] != 0:
-            print(f"❌ Bybit klines error: {data}")
+        if not data:
+            print("❌ MEXC không trả về dữ liệu")
             return None
 
-        candles = data["result"]["list"]
-        if not candles:
-            print("❌ Bybit không trả về dữ liệu")
-            return None
+        print(f"✅ MEXC trả về {len(data)} candles")
 
-        print(f"✅ Bybit trả về {len(candles)} candles")
-
-        # Bybit trả về: [timestamp, open, high, low, close, volume, turnover]
-        df = pd.DataFrame(candles, columns=[
-            "timestamp", "open", "high", "low", "close", "volume", "turnover"
+        # MEXC trả về: [openTime, open, high, low, close, volume, closeTime, quoteVolume, trades, takerBuyBase, takerBuyQuote, ignore]
+        df = pd.DataFrame(data, columns=[
+            "timestamp", "open", "high", "low", "close", "volume",
+            "close_time", "quote_volume", "trades",
+            "taker_buy_volume", "taker_buy_quote_volume", "ignore"
         ])
 
         # Convert numeric
@@ -285,7 +279,7 @@ def download_bybit():
 
         print()
         print("=" * 70)
-        print("📊 BYBIT DATA INFO")
+        print("📊 MEXC DATA INFO")
         print("=" * 70)
 
         print(f"✅ Candles : {len(df)}")
@@ -314,9 +308,9 @@ def download_bybit():
         print("💰 PRICE CHECK")
         print("=" * 70)
 
-        print(f"Bybit LIVE PRICE     : {live_price:.2f}")
-        print(f"Last KLINE CLOSE     : {last_candle['close']:.2f}")
-        print(f"Previous KLINE       : {df.iloc[-2]['close']:.2f}")
+        print(f"MEXC LIVE PRICE     : {live_price:.2f}")
+        print(f"Last KLINE CLOSE    : {last_candle['close']:.2f}")
+        print(f"Previous KLINE      : {df.iloc[-2]['close']:.2f}")
         print(f"Difference LIVE/KLINE : {live_price - last_candle['close']:+.2f}")
 
         print()
@@ -340,25 +334,144 @@ def download_bybit():
 
         return df
 
+    except requests.exceptions.RequestException as e:
+        print(f"❌ MEXC API error: {e}")
+        return None
+
     except Exception as e:
-        print(f"❌ Bybit API error: {e}")
+        print(f"❌ MEXC data error: {e}")
         return None
 
 
 # ============================================================
-# LOAD DATA
+# DOWNLOAD BINANCE DATA (BACKUP)
+# ============================================================
+
+def download_binance():
+    print()
+    print("=" * 70)
+    print("📥 BINANCE FUTURES XAUUSDT (BACKUP)")
+    print("=" * 70)
+
+    KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
+    TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/price"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    }
+
+    params = {
+        "symbol": "XAUUSDT",
+        "interval": "30m",
+        "limit": CANDLE_LIMIT
+    }
+
+    print(f"📊 Symbol : XAUUSDT (Binance)")
+    print(f"⏱ TF     : 30m")
+    print(f"📈 Limit  : {CANDLE_LIMIT}")
+
+    try:
+        # 1. CURRENT PRICE
+        print()
+        print("▶️ Fetching Binance ticker...")
+        
+        ticker = requests.get(
+            TICKER_URL,
+            params={"symbol": "XAUUSDT"},
+            headers=headers,
+            timeout=15
+        )
+        ticker.raise_for_status()
+        ticker_data = ticker.json()
+        live_price = float(ticker_data["price"])
+        print(f"💰 Binance LIVE PRICE : {live_price:.2f}")
+
+        # 2. KLINES
+        print("▶️ Fetching Binance klines...")
+        
+        r = requests.get(
+            KLINE_URL,
+            params=params,
+            headers=headers,
+            timeout=15
+        )
+        r.raise_for_status()
+        data = r.json()
+
+        if not data:
+            print("❌ Binance không trả về KLINE")
+            return None
+
+        print(f"✅ Binance trả về {len(data)} candles")
+
+    except Exception as e:
+        print(f"❌ Binance API error: {e}")
+        return None
+
+    # DataFrame
+    columns = [
+        "timestamp", "open", "high", "low", "close", "volume",
+        "close_time", "quote_volume", "trades",
+        "taker_buy_volume", "taker_buy_quote_volume", "ignore"
+    ]
+
+    df = pd.DataFrame(data, columns=columns)
+
+    # Numeric
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Timestamp
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    df = df.sort_values("timestamp").reset_index(drop=True)
+
+    # Validation
+    if df.empty or df[["open", "high", "low", "close", "volume"]].isna().any().any():
+        return None
+
+    # Info
+    print()
+    print("=" * 70)
+    print("📊 BINANCE DATA INFO")
+    print("=" * 70)
+    print(f"✅ Candles : {len(df)}")
+    print(f"📅 From    : {df['timestamp'].iloc[0]}")
+    print(f"📅 To      : {df['timestamp'].iloc[-1]}")
+
+    return df
+
+
+# ============================================================
+# LOAD DATA - MEXC CHÍNH, BINANCE BACKUP
 # ============================================================
 
 def load_data():
-    df = download_bybit()
+    # Thử MEXC trước
+    df = download_mexc()
     
-    if df is None:
-        return None
+    if df is not None:
+        print()
+        print("✅ Using MEXC data")
+        df = df.tail(CANDLE_LIMIT).copy()
+        print(f"✅ Using last {len(df)} candles")
+        return df.reset_index(drop=True)
     
-    df = df.tail(CANDLE_LIMIT).copy()
+    # Nếu MEXC lỗi, thử Binance
     print()
-    print(f"✅ Using last {len(df)} candles")
-    return df.reset_index(drop=True)
+    print("⚠️ MEXC failed, trying Binance...")
+    df = download_binance()
+    
+    if df is not None:
+        print()
+        print("✅ Using Binance data")
+        df = df.tail(CANDLE_LIMIT).copy()
+        print(f"✅ Using last {len(df)} candles")
+        return df.reset_index(drop=True)
+    
+    return None
 
 
 # ============================================================
@@ -687,13 +800,13 @@ def check_signal(df):
 def main():
 
     print()
-    print("🚀 XAUUSDT RROF BYBIT SCANNER")
-    print("==============================")
+    print("🚀 XAUUSDT RROF SCANNER (MEXC + Binance)")
+    print("=========================================")
 
     df = load_data()
 
     if df is None:
-        print("❌ Không lấy được dữ liệu từ Bybit")
+        print("❌ Không lấy được dữ liệu từ MEXC hoặc Binance")
         sys.exit(1)
 
     df = calculate_everex(df)
@@ -709,7 +822,7 @@ def main():
     if signal == "LONG":
         message = (
             "🟢 <b>XAUUSDT RROF LONG</b>\n\n"
-            f"⏱ Timeframe: 30m (Bybit)\n"
+            f"⏱ Timeframe: 30m\n"
             f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
             f"📈 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
             f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
@@ -721,7 +834,7 @@ def main():
     elif signal == "SHORT":
         message = (
             "🔴 <b>XAUUSDT RROF SHORT</b>\n\n"
-            f"⏱ Timeframe: 30m (Bybit)\n"
+            f"⏱ Timeframe: 30m\n"
             f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
             f"📉 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
             f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
