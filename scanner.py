@@ -181,6 +181,16 @@ def download_binance():
     KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
     TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/price"
 
+    # ============================================================
+    # QUAN TRỌNG: Thêm headers để tránh bị chặn 451
+    # ============================================================
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    }
+
     params = {
         "symbol": SYMBOL,
         "interval": TIMEFRAME,
@@ -200,6 +210,7 @@ def download_binance():
         ticker = requests.get(
             TICKER_URL,
             params={"symbol": SYMBOL},
+            headers=headers,
             timeout=15
         )
 
@@ -219,6 +230,7 @@ def download_binance():
         r = requests.get(
             KLINE_URL,
             params=params,
+            headers=headers,
             timeout=15
         )
 
@@ -409,6 +421,20 @@ def download_binance():
     print(
         f"Last candle vol  : {last_candle['volume']:,.2f}"
     )
+
+    # ============================================================
+    # VOLUME CHECK
+    # ============================================================
+
+    print()
+    print("=" * 70)
+    print("🔊 VOLUME STATISTICS")
+    print("=" * 70)
+
+    print(f"Volume min  : {df['volume'].min():,.2f}")
+    print(f"Volume max  : {df['volume'].max():,.2f}")
+    print(f"Volume avg  : {df['volume'].mean():,.2f}")
+    print(f"Volume zero : {(df['volume'] == 0).sum()}")
 
     # ============================================================
     # IMPORTANT
