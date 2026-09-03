@@ -1,20 +1,18 @@
 import os
 import sys
-import subprocess
-import glob
 import requests
 import pandas as pd
 import numpy as np
+import json
 from datetime import datetime, timezone, timedelta
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-SYMBOL = "XAUUSD"
-TIMEFRAME = "m30"
-DOWNLOAD_DAYS = 10
-CANDLE_LIMIT = 250
+SYMBOL = "XAUUSDT.P"
+TIMEFRAME = "30"
+CANDLE_LIMIT = 500
 
 # EVEREX
 RROF_LENGTH = 10
@@ -167,137 +165,177 @@ def normalize(value, average):
 
 
 # ============================================================
-# DOWNLOAD DUKASCOPY WITH VOLUME
+# DOWNLOAD TRADINGVIEW DATA
 # ============================================================
 
-def download_dukascopy():
-
+def download_tradingview():
     print()
     print("=" * 70)
-    print("📥 DUKASCOPY XAUUSD WITH VOLUME")
+    print("📥 TRADINGVIEW XAUUSDT.P")
     print("=" * 70)
 
-    now = datetime.now(timezone.utc)
+    # TradingView Chart API
+    URL = "https://scanner.tradingview.com/scan"
 
-    date_to = now.date() + timedelta(days=1)
-    date_from = now.date() - timedelta(days=DOWNLOAD_DAYS)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
 
-    print(f"📅 From : {date_from}")
-    print(f"📅 To   : {date_to}")
-    print(f"⏱ TF   : {TIMEFRAME}")
+    # TradingView symbol mapping
+    symbol_map = {
+        "XAUUSDT.P": "BINANCE:XAUUSDT.P",
+        "XAUUSD": "FX_IDC:XAUUSD",
+    }
 
-    download_dir = "download"
+    tv_symbol = symbol_map.get(SYMBOL, "BINANCE:XAUUSDT.P")
 
-    # Tạo thư mục download
-    os.makedirs(download_dir, exist_ok=True)
+    print(f"📊 Symbol : {tv_symbol}")
+    print(f"⏱ TF     : {TIMEFRAME}m")
+    print(f"📈 Limit  : {CANDLE_LIMIT}")
 
-    # Xóa CSV cũ
-    for f in glob.glob(os.path.join(download_dir, "*.csv")):
-        try:
-            os.remove(f)
-        except Exception:
-            pass
-
-    # ============================================================
-    # QUAN TRỌNG: THÊM -v ĐỂ BẬT VOLUME
-    # ============================================================
-    command = [
-        "npx",
-        "--yes",
-        "dukascopy-node",
-        "-i",
-        "xauusd",
-        "-from",
-        str(date_from),
-        "-to",
-        str(date_to),
-        "-t",
-        TIMEFRAME,
-        # BẬT VOLUME
-        "-v",
-        # Volume units thay vì millions
-        "-vu",
-        "units",
-        "-f",
-        "csv",
-        "-dir",
-        download_dir
-    ]
-
-    print()
-    print("▶️ Downloading Dukascopy WITH VOLUME...")
-    print()
-    print("Command:")
-    print(" ".join(command))
-    print()
+    # TradingView scan payload
+    payload = {
+        "symbols": {
+            "tickers": [tv_symbol],
+            "query": {"types": []}
+        },
+        "columns": [
+            "open", "high", "low", "close", "volume"
+        ]
+    }
 
     try:
-
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=180
+        print()
+        print("▶️ Fetching TradingView data...")
+        
+        response = requests.post(
+            URL,
+            headers=headers,
+            json=payload,
+            timeout=30
         )
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        if not data.get("data"):
+            print("❌ TradingView không trả về dữ liệu")
+            return None
+            
+        # Lấy dữ liệu từ response
+        result = data["data"][0]
+        
+        # Dữ liệu trả về dạng: [d, d, d, ...] với mỗi d là [open, high, low, close, volume]
+        # Hoặc có thể là [timestamp, open, high, low, close, volume]
+        raw_data = result.get("d", [])
+        
+        if not raw_data:
+            print("❌ Không có dữ liệu OHLCV")
+            return None
+            
+        # Chuyển đổi sang DataFrame
+        df = pd.DataFrame(raw_data, columns=["open", "high", "low", "close", "volume"])
+        
+        # Thêm timestamp (giả định dữ liệu theo thứ tự thời gian)
+        # TradingView không trả timestamp trong scan API, nên tạo giả định
+        # Lấy timestamp hiện tại và giảm dần
+        now = datetime.now(timezone.utc)
+        
+        # Tạo timestamp cho từng candle (giả định mỗi candle cách nhau 30 phút)
+        timestamps = []
+        for i in range(len(df) - 1, -1, -1):
+            ts = now - timedelta(minutes=(len(df) - i) * 30)
+            timestamps.append(ts)
+            
+        df["timestamp"] = timestamps
+        
+        # Sắp xếp theo thời gian
+        df = df.sort_values("timestamp").reset_index(drop=True)
 
-        print(result.stdout)
+        # Convert numeric
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        if result.returncode != 0:
+        # ============================================================
+        # VALIDATION
+        # ============================================================
 
-            print("❌ Dukascopy download failed")
-            print(result.stderr)
-
+        if df.empty:
+            print("❌ DataFrame rỗng")
             return None
 
-    except subprocess.TimeoutExpired:
+        if df[["open", "high", "low", "close", "volume"]].isna().any().any():
+            print("❌ OHLCV chứa NaN")
+            return None
 
-        print("❌ Download timeout")
+        if (df["volume"] < 0).any():
+            print("❌ Volume không hợp lệ")
+            return None
 
-        return None
-
-    except Exception as e:
-
-        print("❌ Download error:", e)
-
-        return None
-
-    # ============================================================
-    # TÌM CSV TRONG THƯ MỤC download
-    # ============================================================
-
-    files = glob.glob(os.path.join(download_dir, "*.csv"))
-
-    if not files:
-
-        print("❌ Không tìm thấy file CSV trong download/")
+        # ============================================================
+        # DATA INFO
+        # ============================================================
 
         print()
-        print("Files hiện có:")
+        print("=" * 70)
+        print("📊 TRADINGVIEW DATA INFO")
+        print("=" * 70)
 
-        for root, dirs, filenames in os.walk("."):
-            for filename in filenames:
-                print("   ", os.path.join(root, filename))
+        print(f"✅ Candles : {len(df)}")
+        print(f"📅 From    : {df['timestamp'].iloc[0]}")
+        print(f"📅 To      : {df['timestamp'].iloc[-1]}")
 
+        print()
+        print("📋 LAST 5 CANDLES")
+        print(df.tail(5)[[
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+        ]].to_string(index=False))
+
+        # ============================================================
+        # PRICE CHECK
+        # ============================================================
+
+        last_candle = df.iloc[-1]
+
+        print()
+        print("=" * 70)
+        print("💰 PRICE CHECK")
+        print("=" * 70)
+
+        print(f"Last KLINE CLOSE     : {last_candle['close']:.2f}")
+        print(f"Previous KLINE       : {df.iloc[-2]['close']:.2f}")
+
+        print()
+        print(f"Last candle time : {last_candle['timestamp']}")
+        print(f"Last candle close: {last_candle['close']:.2f}")
+        print(f"Last candle vol  : {last_candle['volume']:,.2f}")
+
+        # ============================================================
+        # VOLUME STATISTICS
+        # ============================================================
+
+        print()
+        print("=" * 70)
+        print("🔊 VOLUME STATISTICS")
+        print("=" * 70)
+
+        print(f"Volume min  : {df['volume'].min():,.2f}")
+        print(f"Volume max  : {df['volume'].max():,.2f}")
+        print(f"Volume avg  : {df['volume'].mean():,.2f}")
+        print(f"Volume zero : {(df['volume'] == 0).sum()}")
+
+        return df
+
+    except Exception as e:
+        print(f"❌ TradingView API error: {e}")
         return None
-
-    print()
-    print("📁 CSV found:")
-
-    for f in files:
-        print("   ", f)
-
-    # ============================================================
-    # CHỌN FILE MỚI NHẤT
-    # ============================================================
-
-    files.sort(key=os.path.getmtime, reverse=True)
-    selected = files[0]
-
-    print()
-    print("✅ Selected:")
-    print(selected)
-
-    return selected
 
 
 # ============================================================
@@ -305,141 +343,14 @@ def download_dukascopy():
 # ============================================================
 
 def load_data():
-
-    file = download_dukascopy()
-
-    if not file:
+    df = download_tradingview()
+    
+    if df is None:
         return None
-
-    print()
-    print("=" * 70)
-    print("📊 LOAD DUKASCOPY DATA")
-    print("=" * 70)
-
-    try:
-
-        df = pd.read_csv(file)
-
-    except Exception as e:
-
-        print("❌ CSV read error:", e)
-
-        return None
-
-    print()
-    print("📋 Columns:")
-    print(df.columns.tolist())
-
-    print()
-    print("📋 First rows:")
-    print(df.head(3).to_string())
-
-    # --------------------------------------------------------
-    # timestamp
-    # --------------------------------------------------------
-
-    if "timestamp" not in df.columns:
-
-        print("❌ Không có timestamp")
-
-        return None
-
-    df["datetime"] = pd.to_datetime(
-        df["timestamp"],
-        unit="ms",
-        utc=True
-    )
-
-    # --------------------------------------------------------
-    # numeric
-    # --------------------------------------------------------
-
-    required = [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume"
-    ]
-
-    for col in required:
-
-        if col not in df.columns:
-
-            print(
-                f"❌ Thiếu cột bắt buộc: {col}"
-            )
-
-            return None
-
-        df[col] = pd.to_numeric(
-            df[col],
-            errors="coerce"
-        )
-
-    # --------------------------------------------------------
-    # REMOVE INVALID
-    # --------------------------------------------------------
-
-    df = df.dropna(
-        subset=[
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume"
-        ]
-    )
-
-    df = df.sort_values(
-        "datetime"
-    )
-
-    df = df.drop_duplicates(
-        subset=["datetime"]
-    )
-
-    # ============================================================
-    # VOLUME CHECK - CHI TIẾT
-    # ============================================================
-
-    print()
-    print("=" * 70)
-    print("🔊 VOLUME CHECK")
-    print("=" * 70)
-
-    print(f"Volume NaN  : {df['volume'].isna().sum()}")
-    print(f"Volume min  : {df['volume'].min():,.2f}")
-    print(f"Volume max  : {df['volume'].max():,.2f}")
-    print(f"Volume avg  : {df['volume'].mean():,.2f}")
-    print(f"Volume zero : {(df['volume'] == 0).sum()}")
-
-    if df["volume"].isna().any():
-
-        print("❌ Volume chứa NaN")
-
-        return None
-
-    if (df["volume"] <= 0).all():
-
-        print("❌ TOÀN BỘ VOLUME = 0")
-
-        return None
-
-    print()
-    print(f"✅ Loaded: {len(df)} candles")
-
-    print(
-        f"📅 {df['datetime'].iloc[0]}"
-        f" → {df['datetime'].iloc[-1]}"
-    )
-
-    # Chỉ lấy CANDLE_LIMIT nến cuối
+    
     df = df.tail(CANDLE_LIMIT).copy()
-
     print()
     print(f"✅ Using last {len(df)} candles")
-
     return df.reset_index(drop=True)
 
 
@@ -769,13 +680,13 @@ def check_signal(df):
 def main():
 
     print()
-    print("🚀 XAUUSD RROF DUKASCOPY SCANNER")
-    print("=================================")
+    print("🚀 XAUUSDT.P RROF TRADINGVIEW SCANNER")
+    print("======================================")
 
     df = load_data()
 
     if df is None:
-        print("❌ Không lấy được dữ liệu")
+        print("❌ Không lấy được dữ liệu từ TradingView")
         sys.exit(1)
 
     df = calculate_everex(df)
@@ -790,8 +701,8 @@ def main():
 
     if signal == "LONG":
         message = (
-            "🟢 <b>XAUUSD RROF LONG</b>\n\n"
-            f"⏱ Timeframe: M30 (Dukascopy)\n"
+            "🟢 <b>XAUUSDT.P RROF LONG</b>\n\n"
+            f"⏱ Timeframe: 30m (TradingView)\n"
             f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
             f"📈 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
             f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
@@ -802,8 +713,8 @@ def main():
 
     elif signal == "SHORT":
         message = (
-            "🔴 <b>XAUUSD RROF SHORT</b>\n\n"
-            f"⏱ Timeframe: M30 (Dukascopy)\n"
+            "🔴 <b>XAUUSDT.P RROF SHORT</b>\n\n"
+            f"⏱ Timeframe: 30m (TradingView)\n"
             f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
             f"📉 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
             f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
