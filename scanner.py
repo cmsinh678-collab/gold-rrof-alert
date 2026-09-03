@@ -1,5 +1,7 @@
 import os
 import sys
+import subprocess
+import glob
 import requests
 import pandas as pd
 import numpy as np
@@ -9,13 +11,10 @@ from datetime import datetime, timezone, timedelta
 # CONFIG
 # ============================================================
 
-SYMBOL = "XAUUSDT"
-
-# Timeframe: 30m
-TIMEFRAME = "30min"
-
-# Số nến lấy về
-CANDLE_LIMIT = 500
+SYMBOL = "XAUUSD"
+TIMEFRAME = "m30"
+DOWNLOAD_DAYS = 10
+CANDLE_LIMIT = 250
 
 # EVEREX
 RROF_LENGTH = 10
@@ -168,187 +167,137 @@ def normalize(value, average):
 
 
 # ============================================================
-# DOWNLOAD HUOBI DATA
+# DOWNLOAD DUKASCOPY WITH VOLUME
 # ============================================================
 
-def download_huobi():
+def download_dukascopy():
+
     print()
     print("=" * 70)
-    print("📥 HUOBI XAUUSDT")
+    print("📥 DUKASCOPY XAUUSD WITH VOLUME")
     print("=" * 70)
 
-    KLINE_URL = "https://api.huobi.pro/market/history/kline"
-    TICKER_URL = "https://api.huobi.pro/market/detail/merged"
+    now = datetime.now(timezone.utc)
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-        "Accept-Encoding": "gzip, deflate",
-    }
+    date_to = now.date() + timedelta(days=1)
+    date_from = now.date() - timedelta(days=DOWNLOAD_DAYS)
 
-    params_kline = {
-        "symbol": "xauusdt",
-        "period": TIMEFRAME,
-        "size": CANDLE_LIMIT
-    }
+    print(f"📅 From : {date_from}")
+    print(f"📅 To   : {date_to}")
+    print(f"⏱ TF   : {TIMEFRAME}")
 
-    params_ticker = {
-        "symbol": "xauusdt"
-    }
+    download_dir = "download"
 
-    print(f"📊 Symbol : XAUUSDT (Huobi)")
-    print(f"⏱ TF     : 30min")
-    print(f"📈 Limit  : {CANDLE_LIMIT}")
+    # Tạo thư mục download
+    os.makedirs(download_dir, exist_ok=True)
+
+    # Xóa CSV cũ
+    for f in glob.glob(os.path.join(download_dir, "*.csv")):
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
+    # ============================================================
+    # QUAN TRỌNG: THÊM -v ĐỂ BẬT VOLUME
+    # ============================================================
+    command = [
+        "npx",
+        "--yes",
+        "dukascopy-node",
+        "-i",
+        "xauusd",
+        "-from",
+        str(date_from),
+        "-to",
+        str(date_to),
+        "-t",
+        TIMEFRAME,
+        # BẬT VOLUME
+        "-v",
+        # Volume units thay vì millions
+        "-vu",
+        "units",
+        "-f",
+        "csv",
+        "-dir",
+        download_dir
+    ]
+
+    print()
+    print("▶️ Downloading Dukascopy WITH VOLUME...")
+    print()
+    print("Command:")
+    print(" ".join(command))
+    print()
 
     try:
-        # 1. Current price
-        print()
-        print("▶️ Fetching Huobi ticker...")
-        
-        ticker = requests.get(
-            TICKER_URL,
-            params=params_ticker,
-            headers=headers,
-            timeout=15
-        )
-        ticker.raise_for_status()
-        ticker_data = ticker.json()
-        
-        if ticker_data["status"] == "ok":
-            live_price = float(ticker_data["tick"]["close"])
-            print(f"💰 Huobi LIVE PRICE : {live_price:.2f}")
-        else:
-            print(f"❌ Huobi ticker error: {ticker_data}")
-            return None
 
-        # 2. KLINES
-        print("▶️ Fetching Huobi klines...")
-        
-        r = requests.get(
-            KLINE_URL,
-            params=params_kline,
-            headers=headers,
-            timeout=15
-        )
-        r.raise_for_status()
-        data = r.json()
-
-        if data["status"] != "ok":
-            print(f"❌ Huobi klines error: {data}")
-            return None
-
-        candles = data["data"]
-        if not candles:
-            print("❌ Huobi không trả về dữ liệu")
-            return None
-
-        print(f"✅ Huobi trả về {len(candles)} candles")
-
-        # Huobi trả về: [id, open, close, low, high, amount, vol, count]
-        df = pd.DataFrame(candles, columns=[
-            "id", "open", "close", "low", "high", "amount", "volume", "count"
-        ])
-
-        # Rename để chuẩn hóa
-        df = df.rename(columns={
-            "id": "timestamp",
-            "close": "close",
-            "amount": "quote_volume"
-        })
-
-        # Convert numeric
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        # Timestamp (seconds -> milliseconds)
-        df["timestamp"] = pd.to_datetime(
-            df["timestamp"].astype(np.int64) * 1000,
-            unit="ms",
-            utc=True
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=180
         )
 
-        df = df.sort_values("timestamp").reset_index(drop=True)
+        print(result.stdout)
 
-        # ============================================================
-        # VALIDATION
-        # ============================================================
+        if result.returncode != 0:
 
-        if df.empty:
-            print("❌ DataFrame rỗng")
+            print("❌ Dukascopy download failed")
+            print(result.stderr)
+
             return None
 
-        if df[["open", "high", "low", "close", "volume"]].isna().any().any():
-            print("❌ OHLCV chứa NaN")
-            return None
+    except subprocess.TimeoutExpired:
 
-        if (df["volume"] < 0).any():
-            print("❌ Volume không hợp lệ")
-            return None
+        print("❌ Download timeout")
 
-        # ============================================================
-        # DATA INFO
-        # ============================================================
-
-        print()
-        print("=" * 70)
-        print("📊 HUOBI DATA INFO")
-        print("=" * 70)
-
-        print(f"✅ Candles : {len(df)}")
-        print(f"📅 From    : {df['timestamp'].iloc[0]}")
-        print(f"📅 To      : {df['timestamp'].iloc[-1]}")
-
-        print()
-        print("📋 LAST 5 CANDLES")
-        print(df.tail(5)[[
-            "timestamp",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume"
-        ]].to_string(index=False))
-
-        # ============================================================
-        # LIVE VS CANDLE
-        # ============================================================
-
-        last_candle = df.iloc[-1]
-
-        print()
-        print("=" * 70)
-        print("💰 PRICE CHECK")
-        print("=" * 70)
-
-        print(f"Huobi LIVE PRICE     : {live_price:.2f}")
-        print(f"Last KLINE CLOSE     : {last_candle['close']:.2f}")
-        print(f"Previous KLINE       : {df.iloc[-2]['close']:.2f}")
-        print(f"Difference LIVE/KLINE : {live_price - last_candle['close']:+.2f}")
-
-        print()
-        print(f"Last candle time : {last_candle['timestamp']}")
-        print(f"Last candle close: {last_candle['close']:.2f}")
-        print(f"Last candle vol  : {last_candle['volume']:,.2f}")
-
-        # ============================================================
-        # VOLUME STATISTICS
-        # ============================================================
-
-        print()
-        print("=" * 70)
-        print("🔊 VOLUME STATISTICS")
-        print("=" * 70)
-
-        print(f"Volume min  : {df['volume'].min():,.2f}")
-        print(f"Volume max  : {df['volume'].max():,.2f}")
-        print(f"Volume avg  : {df['volume'].mean():,.2f}")
-        print(f"Volume zero : {(df['volume'] == 0).sum()}")
-
-        return df
+        return None
 
     except Exception as e:
-        print(f"❌ Huobi API error: {e}")
+
+        print("❌ Download error:", e)
+
         return None
+
+    # ============================================================
+    # TÌM CSV TRONG THƯ MỤC download
+    # ============================================================
+
+    files = glob.glob(os.path.join(download_dir, "*.csv"))
+
+    if not files:
+
+        print("❌ Không tìm thấy file CSV trong download/")
+
+        print()
+        print("Files hiện có:")
+
+        for root, dirs, filenames in os.walk("."):
+            for filename in filenames:
+                print("   ", os.path.join(root, filename))
+
+        return None
+
+    print()
+    print("📁 CSV found:")
+
+    for f in files:
+        print("   ", f)
+
+    # ============================================================
+    # CHỌN FILE MỚI NHẤT
+    # ============================================================
+
+    files.sort(key=os.path.getmtime, reverse=True)
+    selected = files[0]
+
+    print()
+    print("✅ Selected:")
+    print(selected)
+
+    return selected
 
 
 # ============================================================
@@ -356,14 +305,141 @@ def download_huobi():
 # ============================================================
 
 def load_data():
-    df = download_huobi()
-    
-    if df is None:
+
+    file = download_dukascopy()
+
+    if not file:
         return None
-    
+
+    print()
+    print("=" * 70)
+    print("📊 LOAD DUKASCOPY DATA")
+    print("=" * 70)
+
+    try:
+
+        df = pd.read_csv(file)
+
+    except Exception as e:
+
+        print("❌ CSV read error:", e)
+
+        return None
+
+    print()
+    print("📋 Columns:")
+    print(df.columns.tolist())
+
+    print()
+    print("📋 First rows:")
+    print(df.head(3).to_string())
+
+    # --------------------------------------------------------
+    # timestamp
+    # --------------------------------------------------------
+
+    if "timestamp" not in df.columns:
+
+        print("❌ Không có timestamp")
+
+        return None
+
+    df["datetime"] = pd.to_datetime(
+        df["timestamp"],
+        unit="ms",
+        utc=True
+    )
+
+    # --------------------------------------------------------
+    # numeric
+    # --------------------------------------------------------
+
+    required = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
+    ]
+
+    for col in required:
+
+        if col not in df.columns:
+
+            print(
+                f"❌ Thiếu cột bắt buộc: {col}"
+            )
+
+            return None
+
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce"
+        )
+
+    # --------------------------------------------------------
+    # REMOVE INVALID
+    # --------------------------------------------------------
+
+    df = df.dropna(
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+        ]
+    )
+
+    df = df.sort_values(
+        "datetime"
+    )
+
+    df = df.drop_duplicates(
+        subset=["datetime"]
+    )
+
+    # ============================================================
+    # VOLUME CHECK - CHI TIẾT
+    # ============================================================
+
+    print()
+    print("=" * 70)
+    print("🔊 VOLUME CHECK")
+    print("=" * 70)
+
+    print(f"Volume NaN  : {df['volume'].isna().sum()}")
+    print(f"Volume min  : {df['volume'].min():,.2f}")
+    print(f"Volume max  : {df['volume'].max():,.2f}")
+    print(f"Volume avg  : {df['volume'].mean():,.2f}")
+    print(f"Volume zero : {(df['volume'] == 0).sum()}")
+
+    if df["volume"].isna().any():
+
+        print("❌ Volume chứa NaN")
+
+        return None
+
+    if (df["volume"] <= 0).all():
+
+        print("❌ TOÀN BỘ VOLUME = 0")
+
+        return None
+
+    print()
+    print(f"✅ Loaded: {len(df)} candles")
+
+    print(
+        f"📅 {df['datetime'].iloc[0]}"
+        f" → {df['datetime'].iloc[-1]}"
+    )
+
+    # Chỉ lấy CANDLE_LIMIT nến cuối
     df = df.tail(CANDLE_LIMIT).copy()
+
     print()
     print(f"✅ Using last {len(df)} candles")
+
     return df.reset_index(drop=True)
 
 
@@ -693,13 +769,13 @@ def check_signal(df):
 def main():
 
     print()
-    print("🚀 XAUUSDT RROF HUOBI SCANNER")
-    print("==============================")
+    print("🚀 XAUUSD RROF DUKASCOPY SCANNER")
+    print("=================================")
 
     df = load_data()
 
     if df is None:
-        print("❌ Không lấy được dữ liệu từ Huobi")
+        print("❌ Không lấy được dữ liệu")
         sys.exit(1)
 
     df = calculate_everex(df)
@@ -714,8 +790,8 @@ def main():
 
     if signal == "LONG":
         message = (
-            "🟢 <b>XAUUSDT RROF LONG</b>\n\n"
-            f"⏱ Timeframe: 30m (Huobi)\n"
+            "🟢 <b>XAUUSD RROF LONG</b>\n\n"
+            f"⏱ Timeframe: M30 (Dukascopy)\n"
             f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
             f"📈 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
             f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
@@ -726,8 +802,8 @@ def main():
 
     elif signal == "SHORT":
         message = (
-            "🔴 <b>XAUUSDT RROF SHORT</b>\n\n"
-            f"⏱ Timeframe: 30m (Huobi)\n"
+            "🔴 <b>XAUUSD RROF SHORT</b>\n\n"
+            f"⏱ Timeframe: M30 (Dukascopy)\n"
             f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
             f"📉 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
             f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
