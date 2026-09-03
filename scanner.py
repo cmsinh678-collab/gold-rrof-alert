@@ -11,8 +11,8 @@ from datetime import datetime, timezone, timedelta
 
 SYMBOL = "XAUUSDT"
 
-# Binance interval: 30m
-TIMEFRAME = "30m"
+# Timeframe: 30m
+TIMEFRAME = "30"
 
 # Số nến lấy về
 CANDLE_LIMIT = 500
@@ -168,42 +168,43 @@ def normalize(value, average):
 
 
 # ============================================================
-# DOWNLOAD OKX DATA
+# DOWNLOAD BYBIT DATA
 # ============================================================
 
-def download_okx():
+def download_bybit():
     print()
     print("=" * 70)
-    print("📥 OKX XAUUSDT PERPETUAL")
+    print("📥 BYBIT XAUUSDT PERPETUAL")
     print("=" * 70)
 
-    KLINE_URL = "https://www.okx.com/api/v5/market/candles"
-    TICKER_URL = "https://www.okx.com/api/v5/market/ticker"
+    KLINE_URL = "https://api.bybit.com/v5/market/kline"
+    TICKER_URL = "https://api.bybit.com/v5/market/tickers"
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
     }
 
-    # OKX symbol cho XAUUSDT là "XAUUSDT" (không có -SWAP)
     params_kline = {
-        "instId": "XAUUSDT",
-        "bar": "30m",
-        "limit": str(CANDLE_LIMIT)
+        "category": "linear",
+        "symbol": "XAUUSDT",
+        "interval": TIMEFRAME,
+        "limit": CANDLE_LIMIT
     }
 
     params_ticker = {
-        "instId": "XAUUSDT"
+        "category": "linear",
+        "symbol": "XAUUSDT"
     }
 
-    print(f"📊 Symbol : XAUUSDT (OKX)")
+    print(f"📊 Symbol : XAUUSDT (Bybit)")
     print(f"⏱ TF     : 30m")
     print(f"📈 Limit  : {CANDLE_LIMIT}")
 
     try:
         # 1. Current price
         print()
-        print("▶️ Fetching OKX ticker...")
+        print("▶️ Fetching Bybit ticker...")
         
         ticker = requests.get(
             TICKER_URL,
@@ -214,15 +215,15 @@ def download_okx():
         ticker.raise_for_status()
         ticker_data = ticker.json()
         
-        if ticker_data["code"] == "0":
-            live_price = float(ticker_data["data"][0]["last"])
-            print(f"💰 OKX LIVE PRICE : {live_price:.2f}")
+        if ticker_data["retCode"] == 0:
+            live_price = float(ticker_data["result"]["list"][0]["lastPrice"])
+            print(f"💰 Bybit LIVE PRICE : {live_price:.2f}")
         else:
-            print(f"❌ OKX ticker error: {ticker_data}")
+            print(f"❌ Bybit ticker error: {ticker_data}")
             return None
 
         # 2. KLINES
-        print("▶️ Fetching OKX klines...")
+        print("▶️ Fetching Bybit klines...")
         
         r = requests.get(
             KLINE_URL,
@@ -233,21 +234,20 @@ def download_okx():
         r.raise_for_status()
         data = r.json()
 
-        if data["code"] != "0":
-            print(f"❌ OKX klines error: {data}")
+        if data["retCode"] != 0:
+            print(f"❌ Bybit klines error: {data}")
             return None
 
-        candles = data["data"]
+        candles = data["result"]["list"]
         if not candles:
-            print("❌ OKX không trả về dữ liệu")
+            print("❌ Bybit không trả về dữ liệu")
             return None
 
-        print(f"✅ OKX trả về {len(candles)} candles")
+        print(f"✅ Bybit trả về {len(candles)} candles")
 
-        # OKX trả về: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
+        # Bybit trả về: [timestamp, open, high, low, close, volume, turnover]
         df = pd.DataFrame(candles, columns=[
-            "timestamp", "open", "high", "low", "close", "volume",
-            "volCcy", "volCcyQuote", "confirm"
+            "timestamp", "open", "high", "low", "close", "volume", "turnover"
         ])
 
         # Convert numeric
@@ -285,7 +285,7 @@ def download_okx():
 
         print()
         print("=" * 70)
-        print("📊 OKX DATA INFO")
+        print("📊 BYBIT DATA INFO")
         print("=" * 70)
 
         print(f"✅ Candles : {len(df)}")
@@ -314,9 +314,9 @@ def download_okx():
         print("💰 PRICE CHECK")
         print("=" * 70)
 
-        print(f"OKX LIVE PRICE      : {live_price:.2f}")
-        print(f"Last KLINE CLOSE    : {last_candle['close']:.2f}")
-        print(f"Previous KLINE      : {df.iloc[-2]['close']:.2f}")
+        print(f"Bybit LIVE PRICE     : {live_price:.2f}")
+        print(f"Last KLINE CLOSE     : {last_candle['close']:.2f}")
+        print(f"Previous KLINE       : {df.iloc[-2]['close']:.2f}")
         print(f"Difference LIVE/KLINE : {live_price - last_candle['close']:+.2f}")
 
         print()
@@ -341,7 +341,7 @@ def download_okx():
         return df
 
     except Exception as e:
-        print(f"❌ OKX API error: {e}")
+        print(f"❌ Bybit API error: {e}")
         return None
 
 
@@ -350,7 +350,7 @@ def download_okx():
 # ============================================================
 
 def load_data():
-    df = download_okx()
+    df = download_bybit()
     
     if df is None:
         return None
@@ -687,13 +687,13 @@ def check_signal(df):
 def main():
 
     print()
-    print("🚀 XAUUSDT RROF OKX SCANNER")
-    print("============================")
+    print("🚀 XAUUSDT RROF BYBIT SCANNER")
+    print("==============================")
 
     df = load_data()
 
     if df is None:
-        print("❌ Không lấy được dữ liệu từ OKX")
+        print("❌ Không lấy được dữ liệu từ Bybit")
         sys.exit(1)
 
     df = calculate_everex(df)
@@ -709,7 +709,7 @@ def main():
     if signal == "LONG":
         message = (
             "🟢 <b>XAUUSDT RROF LONG</b>\n\n"
-            f"⏱ Timeframe: 30m (OKX)\n"
+            f"⏱ Timeframe: 30m (Bybit)\n"
             f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
             f"📈 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
             f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
@@ -721,7 +721,7 @@ def main():
     elif signal == "SHORT":
         message = (
             "🔴 <b>XAUUSDT RROF SHORT</b>\n\n"
-            f"⏱ Timeframe: 30m (OKX)\n"
+            f"⏱ Timeframe: 30m (Bybit)\n"
             f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
             f"📉 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
             f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
