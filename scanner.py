@@ -3,27 +3,16 @@ import time
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # =========================================================
-# CÀI ĐẶT THƯ VIỆN pricehub (nếu chưa có)
+# CẤU HÌNH
 # =========================================================
-try:
-    from pricehub import get_ohlc
-except ImportError:
-    print("⚠️ Thư viện pricehub chưa được cài đặt. Đang cài đặt...")
-    os.system("pip install pricehub")
-    from pricehub import get_ohlc
-
-# =========================================================
-# CONFIG
-# =========================================================
-SYMBOL = "XAUUSD"
-TIMEFRAME = "15m"  # <--- ĐÃ SỬA: từ "15min" thành "15m"
+TIMEFRAME = "15m"
 CANDLE_LIMIT = 200
 
 # =========================================================
-# EVEREX SETTINGS (THEO ẢNH CỦA BẠN)
+# CÀI ĐẶT EVEREX (THEO ẢNH CỦA BẠN)
 # =========================================================
 RROF_LENGTH = 10
 RROF_MA_TYPE = "WMA"
@@ -40,7 +29,70 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # =========================================================
-# CÁC HÀM TRỢ GIÚP
+# LẤY DỮ LIỆU TỪ OKX (DÙNG CHO XAUUSD)
+# =========================================================
+def get_okx_klines():
+    """Lấy dữ liệu nến XAUUSD từ OKX Swap"""
+    inst_id = "XAUUSD-SWAP"
+
+    # Map khung thời gian sang định dạng của OKX
+    interval_map = {
+        '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m',
+        '1h': '1H', '2h': '2H', '4h': '4H', '6h': '6H', '12h': '12H',
+        '1d': '1D', '1w': '1W', '1M': '1M'
+    }
+    okx_interval = interval_map.get(TIMEFRAME, '15m')
+
+    url = "https://www.okx.com/api/v5/market/history-candles"
+    params = {
+        'instId': inst_id,
+        'bar': okx_interval,
+        'limit': CANDLE_LIMIT
+    }
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+
+    try:
+        print(f"🔄 Đang gọi OKX API cho {inst_id}...")
+        r = requests.get(url, params=params, headers=headers, timeout=20)
+        r.raise_for_status()
+
+        data = r.json()
+        if data['code'] != '0':
+            raise Exception(f"OKX Error: {data.get('msg', 'Unknown error')}")
+
+        candles = data['data']
+        if not candles:
+            raise Exception("Không có dữ liệu nến trả về")
+
+        # Tạo DataFrame
+        df = pd.DataFrame(candles, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volCcy', 'vol', 'volCcyQuote', 'confirm'
+        ])
+
+        # Chuyển đổi kiểu dữ liệu
+        for col in ['open', 'high', 'low', 'close', 'volCcy']:
+            df[col] = df[col].astype(float)
+
+        # OKX trả dữ liệu mới nhất trước, cần đảo ngược để cũ → mới
+        df = df.iloc[::-1].reset_index(drop=True)
+        df['timestamp'] = pd.to_datetime(df['timestamp'].astype(float), unit='ms')
+
+        # Chỉ giữ các cột cần thiết
+        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volCcy']]
+        df = df.rename(columns={'timestamp': 'time', 'volCcy': 'volume'})
+
+        print(f"✅ Lấy thành công {len(df)} cây nến XAUUSD từ OKX.")
+        return df
+
+    except Exception as e:
+        print(f"❌ Lỗi khi lấy dữ liệu từ OKX: {e}")
+        raise
+
+# =========================================================
+# HÀM TÍNH TRUNG BÌNH ĐỘNG
 # =========================================================
 def get_average(series, length, ma_type):
     if ma_type == "SMA":
@@ -57,6 +109,9 @@ def get_average(series, length, ma_type):
     else:
         return series.rolling(length).mean()
 
+# =========================================================
+# HÀM NORMALIZE CỦA EVEREX
+# =========================================================
 def normalize(value, avg):
     if avg is None or np.isnan(avg) or avg == 0:
         return 0.10
@@ -68,38 +123,7 @@ def normalize(value, avg):
     )
 
 # =========================================================
-# GET DATA (OKX QUA pricehub)
-# =========================================================
-def get_gold_data():
-    try:
-        end = datetime.now()
-        start = end - timedelta(days=7)
-
-        print(f"🔄 Đang lấy dữ liệu XAU/USD từ OKX (khung {TIMEFRAME})...")
-
-        df = get_ohlc(
-            broker="okx_spot",
-            symbol="XAU-USDT",
-            interval=TIMEFRAME,
-            start=start,
-            end=end
-        )
-
-        if df is None or len(df) == 0:
-            raise Exception("Không lấy được dữ liệu từ OKX")
-
-        df = df.rename(columns={'timestamp': 'time'})
-        df = df.sort_values('time').reset_index(drop=True)
-
-        print(f"✅ Lấy thành công {len(df)} cây nến từ OKX.")
-        return df
-
-    except Exception as e:
-        print(f"❌ Lỗi khi lấy dữ liệu từ OKX: {e}")
-        raise
-
-# =========================================================
-# EVEREX CALCULATION
+# TÍNH EVEREX
 # =========================================================
 def calculate_everex(df):
     open_ = df["open"]
@@ -108,11 +132,11 @@ def calculate_everex(df):
     close = df["close"]
     volume = df["volume"]
 
-    # VOLUME: Dùng SMA cho LOOKBACK
+    # --- VOLUME ---
     vola = get_average(volume, LOOKBACK, LOOKBACK_MA_TYPE)
     vola_n = normalize(volume, vola) * 100
 
-    # PRICE
+    # --- PRICE ---
     bar_spread = close - open_
     bar_range = high - low
     bar_range = bar_range.replace(0, np.nan)
@@ -164,7 +188,7 @@ def calculate_everex(df):
     return df
 
 # =========================================================
-# TELEGRAM
+# GỬI TIN NHẮN TELEGRAM
 # =========================================================
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
@@ -182,7 +206,7 @@ def send_telegram(message):
         print(f"❌ Lỗi gửi Telegram: {e}")
 
 # =========================================================
-# CHECK SIGNAL
+# KIỂM TRA TÍN HIỆU
 # =========================================================
 def check_signal(df):
     if len(df) < 5:
@@ -206,7 +230,7 @@ def check_signal(df):
 🟢 XAUUSD LONG
 📊 RROF Smooth crossed ABOVE Signal
 ⏱ Timeframe: {TIMEFRAME}
-💰 Price: {current['close']}
+💰 Price: {current['close']:.2f}
 🕐 Candle: {current['time']}
 """
         send_telegram(message)
@@ -217,7 +241,7 @@ def check_signal(df):
 🔴 XAUUSD SHORT
 📊 RROF Smooth crossed BELOW Signal
 ⏱ Timeframe: {TIMEFRAME}
-💰 Price: {current['close']}
+💰 Price: {current['close']:.2f}
 🕐 Candle: {current['time']}
 """
         send_telegram(message)
@@ -227,12 +251,12 @@ def check_signal(df):
         print("🚫 Không có tín hiệu.")
 
 # =========================================================
-# MAIN
+# HÀM CHÍNH
 # =========================================================
 def main():
-    print("🚀 Bắt đầu quét tín hiệu...")
+    print("🚀 Bắt đầu quét tín hiệu XAUUSD...")
     try:
-        df = get_gold_data()
+        df = get_okx_klines()
         df = calculate_everex(df)
         df = df.dropna()
         check_signal(df)
