@@ -1,732 +1,278 @@
 import os
-import sys
+import time
 import requests
 import pandas as pd
 import numpy as np
-import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
-# ============================================================
+# =========================================================
+# CÀI ĐẶT THƯ VIỆN pricehub (nếu chưa có)
+# =========================================================
+try:
+    from pricehub import get_ohlc
+except ImportError:
+    print("⚠️ Thư viện pricehub chưa được cài đặt. Đang cài đặt...")
+    os.system("pip install pricehub")
+    from pricehub import get_ohlc
+
+# =========================================================
 # CONFIG
-# ============================================================
+# =========================================================
+SYMBOL = "XAUUSD"
+TIMEFRAME = "15min"  # Hoặc "15m" nếu pricehub yêu cầu
+CANDLE_LIMIT = 200
 
-SYMBOL = "XAUUSDT.P"
-TIMEFRAME = "30"
-CANDLE_LIMIT = 500
-
-# EVEREX
+# =========================================================
+# EVEREX SETTINGS (THEO ẢNH CỦA BẠN)
+# =========================================================
 RROF_LENGTH = 10
 RROF_MA_TYPE = "WMA"
-
 SMOOTH = 3
-
 SIGNAL_LENGTH = 5
 SIGNAL_MA_TYPE = "WMA"
+LOOKBACK = 20          # Đúng với ảnh của bạn
+LOOKBACK_MA_TYPE = "SMA"  # Đúng với ảnh của bạn
 
-LOOKBACK = 20
+# =========================================================
+# TELEGRAM (vẫn giữ nguyên)
+# =========================================================
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Telegram
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-
-# ============================================================
-# CHECK ENV
-# ============================================================
-
-if not TELEGRAM_BOT_TOKEN:
-    print("❌ TELEGRAM_BOT_TOKEN chưa được thiết lập")
-    sys.exit(1)
-
-if not TELEGRAM_CHAT_ID:
-    print("❌ TELEGRAM_CHAT_ID chưa được thiết lập")
-    sys.exit(1)
-
-
-# ============================================================
-# TELEGRAM
-# ============================================================
-
-def send_telegram(message):
-
-    url = (
-        f"https://api.telegram.org/bot"
-        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
-    )
-
-    data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-
-    try:
-        r = requests.post(url, data=data, timeout=20)
-
-        print("Telegram:", r.status_code)
-
-        if r.status_code != 200:
-            print(r.text)
-
-        return r.status_code == 200
-
-    except Exception as e:
-
-        print("❌ Telegram error:", e)
-
-        return False
-
-
-# ============================================================
-# WMA
-# ============================================================
-
-def wma(series, length):
-
-    weights = np.arange(1, length + 1)
-
-    return series.rolling(length).apply(
-        lambda x: np.dot(x, weights) / weights.sum(),
-        raw=True
-    )
-
-
-# ============================================================
-# GENERAL MA
-# ============================================================
-
+# =========================================================
+# CÁC HÀM TRỢ GIÚP
+# =========================================================
 def get_average(series, length, ma_type):
-
-    ma_type = ma_type.upper()
-
+    """Tính trung bình động"""
     if ma_type == "SMA":
-
+        return series.rolling(length).mean()
+    elif ma_type == "EMA":
+        return series.ewm(span=length, adjust=False).mean()
+    elif ma_type == "RMA":
+        return series.ewm(alpha=1 / length, adjust=False).mean()
+    elif ma_type == "WMA":
+        weights = np.arange(1, length + 1)
+        return series.rolling(length).apply(
+            lambda x: np.dot(x, weights) / weights.sum(), raw=True
+        )
+    else:
         return series.rolling(length).mean()
 
-    elif ma_type == "EMA":
-
-        return series.ewm(
-            span=length,
-            adjust=False
-        ).mean()
-
-    elif ma_type == "RMA":
-
-        return series.ewm(
-            alpha=1 / length,
-            adjust=False
-        ).mean()
-
-    elif ma_type == "WMA":
-
-        return wma(series, length)
-
-    else:
-
-        raise ValueError(
-            f"Unsupported MA type: {ma_type}"
-        )
-
-
-# ============================================================
-# EVEREX NORMALIZE
-# ============================================================
-
-def normalize(value, average):
-
-    x = value / average.replace(0, np.nan)
-
-    result = np.select(
+def normalize(value, avg):
+    """Hàm normalize của chỉ báo EVEREX"""
+    if avg is None or np.isnan(avg) or avg == 0:
+        return 0.10
+    x = value / avg
+    return np.select(
         [
-            x > 1.50,
-            x > 1.20,
-            x > 1.00,
-            x > 0.80,
-            x > 0.60,
-            x > 0.40,
-            x > 0.20
+            x > 1.50, x > 1.20, x > 1.00,
+            x > 0.80, x > 0.60, x > 0.40, x > 0.20
         ],
-        [
-            1.00,
-            0.90,
-            0.80,
-            0.70,
-            0.60,
-            0.50,
-            0.25
-        ],
+        [1.00, 0.90, 0.80, 0.70, 0.60, 0.50, 0.25],
         default=0.10
     )
 
-    return pd.Series(
-        result,
-        index=value.index
-    )
-
-
-# ============================================================
-# DOWNLOAD TRADINGVIEW DATA
-# ============================================================
-
-def download_tradingview():
-    print()
-    print("=" * 70)
-    print("📥 TRADINGVIEW XAUUSDT.P")
-    print("=" * 70)
-
-    # TradingView Chart API
-    URL = "https://scanner.tradingview.com/scan"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
-    # TradingView symbol mapping
-    symbol_map = {
-        "XAUUSDT.P": "BINANCE:XAUUSDT.P",
-        "XAUUSD": "FX_IDC:XAUUSD",
-    }
-
-    tv_symbol = symbol_map.get(SYMBOL, "BINANCE:XAUUSDT.P")
-
-    print(f"📊 Symbol : {tv_symbol}")
-    print(f"⏱ TF     : {TIMEFRAME}m")
-    print(f"📈 Limit  : {CANDLE_LIMIT}")
-
-    # TradingView scan payload
-    payload = {
-        "symbols": {
-            "tickers": [tv_symbol],
-            "query": {"types": []}
-        },
-        "columns": [
-            "open", "high", "low", "close", "volume"
-        ]
-    }
-
+# =========================================================
+# GET DATA (SỬ DỤNG OKX QUA pricehub)
+# =========================================================
+def get_gold_data():
+    """Lấy dữ liệu XAU/USD từ OKX thông qua pricehub"""
     try:
-        print()
-        print("▶️ Fetching TradingView data...")
-        
-        response = requests.post(
-            URL,
-            headers=headers,
-            json=payload,
-            timeout=30
+        end = datetime.now()
+        start = end - timedelta(days=7)  # Lấy 7 ngày dữ liệu
+
+        print(f"🔄 Đang lấy dữ liệu XAU/USD từ OKX (khung {TIMEFRAME})...")
+
+        # Lấy dữ liệu từ pricehub
+        df = get_ohlc(
+            broker="okx_spot",        # Hoặc "okx_futures" nếu cần
+            symbol="XAU-USDT",        # Cặp giao dịch trên OKX
+            interval=TIMEFRAME,
+            start=start,
+            end=end
         )
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        if not data.get("data"):
-            print("❌ TradingView không trả về dữ liệu")
-            return None
-            
-        # Lấy dữ liệu từ response
-        result = data["data"][0]
-        
-        # Dữ liệu trả về dạng: [d, d, d, ...] với mỗi d là [open, high, low, close, volume]
-        # Hoặc có thể là [timestamp, open, high, low, close, volume]
-        raw_data = result.get("d", [])
-        
-        if not raw_data:
-            print("❌ Không có dữ liệu OHLCV")
-            return None
-            
-        # Chuyển đổi sang DataFrame
-        df = pd.DataFrame(raw_data, columns=["open", "high", "low", "close", "volume"])
-        
-        # Thêm timestamp (giả định dữ liệu theo thứ tự thời gian)
-        # TradingView không trả timestamp trong scan API, nên tạo giả định
-        # Lấy timestamp hiện tại và giảm dần
-        now = datetime.now(timezone.utc)
-        
-        # Tạo timestamp cho từng candle (giả định mỗi candle cách nhau 30 phút)
-        timestamps = []
-        for i in range(len(df) - 1, -1, -1):
-            ts = now - timedelta(minutes=(len(df) - i) * 30)
-            timestamps.append(ts)
-            
-        df["timestamp"] = timestamps
-        
-        # Sắp xếp theo thời gian
-        df = df.sort_values("timestamp").reset_index(drop=True)
 
-        # Convert numeric
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        if df is None or len(df) == 0:
+            raise Exception("Không lấy được dữ liệu từ OKX")
 
-        # ============================================================
-        # VALIDATION
-        # ============================================================
+        # pricehub trả về DataFrame với các cột: timestamp, open, high, low, close, volume
+        # Đổi tên cột để khớp với code cũ
+        df = df.rename(columns={'timestamp': 'time'})
 
-        if df.empty:
-            print("❌ DataFrame rỗng")
-            return None
+        # Sắp xếp theo thời gian tăng dần (cũ → mới)
+        df = df.sort_values('time').reset_index(drop=True)
 
-        if df[["open", "high", "low", "close", "volume"]].isna().any().any():
-            print("❌ OHLCV chứa NaN")
-            return None
-
-        if (df["volume"] < 0).any():
-            print("❌ Volume không hợp lệ")
-            return None
-
-        # ============================================================
-        # DATA INFO
-        # ============================================================
-
-        print()
-        print("=" * 70)
-        print("📊 TRADINGVIEW DATA INFO")
-        print("=" * 70)
-
-        print(f"✅ Candles : {len(df)}")
-        print(f"📅 From    : {df['timestamp'].iloc[0]}")
-        print(f"📅 To      : {df['timestamp'].iloc[-1]}")
-
-        print()
-        print("📋 LAST 5 CANDLES")
-        print(df.tail(5)[[
-            "timestamp",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume"
-        ]].to_string(index=False))
-
-        # ============================================================
-        # PRICE CHECK
-        # ============================================================
-
-        last_candle = df.iloc[-1]
-
-        print()
-        print("=" * 70)
-        print("💰 PRICE CHECK")
-        print("=" * 70)
-
-        print(f"Last KLINE CLOSE     : {last_candle['close']:.2f}")
-        print(f"Previous KLINE       : {df.iloc[-2]['close']:.2f}")
-
-        print()
-        print(f"Last candle time : {last_candle['timestamp']}")
-        print(f"Last candle close: {last_candle['close']:.2f}")
-        print(f"Last candle vol  : {last_candle['volume']:,.2f}")
-
-        # ============================================================
-        # VOLUME STATISTICS
-        # ============================================================
-
-        print()
-        print("=" * 70)
-        print("🔊 VOLUME STATISTICS")
-        print("=" * 70)
-
-        print(f"Volume min  : {df['volume'].min():,.2f}")
-        print(f"Volume max  : {df['volume'].max():,.2f}")
-        print(f"Volume avg  : {df['volume'].mean():,.2f}")
-        print(f"Volume zero : {(df['volume'] == 0).sum()}")
-
+        print(f"✅ Lấy thành công {len(df)} cây nến từ OKX.")
         return df
 
     except Exception as e:
-        print(f"❌ TradingView API error: {e}")
-        return None
+        print(f"❌ Lỗi khi lấy dữ liệu từ OKX: {e}")
+        raise
 
-
-# ============================================================
-# LOAD DATA
-# ============================================================
-
-def load_data():
-    df = download_tradingview()
-    
-    if df is None:
-        return None
-    
-    df = df.tail(CANDLE_LIMIT).copy()
-    print()
-    print(f"✅ Using last {len(df)} candles")
-    return df.reset_index(drop=True)
-
-
-# ============================================================
-# EVEREX
-# ============================================================
-
+# =========================================================
+# EVEREX CALCULATION (ĐÃ SỬA THEO ẢNH CỦA BẠN)
+# =========================================================
 def calculate_everex(df):
-
-    df = df.copy()
-
+    """Tính toán chỉ báo EVEREX"""
+    open_ = df["open"]
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
     volume = df["volume"]
 
-    # --------------------------------------------------------
-    # VOLUME
-    # --------------------------------------------------------
+    # --- VOLUME: Dùng SMA cho LOOKBACK ---
+    vola = get_average(volume, LOOKBACK, LOOKBACK_MA_TYPE)
+    vola_n = normalize(volume, vola) * 100
 
-    vola = get_average(
-        volume,
-        LOOKBACK,
-        "SMA"
-    )
+    # --- PRICE ---
+    bar_spread = close - open_
+    bar_range = high - low
+    bar_range = bar_range.replace(0, np.nan)
 
-    vola_n = (
-        normalize(
-            volume,
-            vola
-        ) * 100
-    )
+    r2 = high.rolling(2).max() - low.rolling(2).min()
+    r2 = r2.replace(0, np.nan)
 
-    # --------------------------------------------------------
-    # PRICE
-    # --------------------------------------------------------
+    src_shift = close.diff()
+    sign_shift = np.sign(src_shift)
+    sign_spread = np.sign(bar_spread)
 
-    bar_spread = (
-        df["close"] -
-        df["open"]
-    )
+    # 1. Bar Closing
+    barclosing = (2 * (close - low) / bar_range * 100) - 100
 
-    bar_range = (
-        df["high"] -
-        df["low"]
-    )
+    # 2. Spread to Range
+    s2r = bar_spread / bar_range * 100
 
-    bar_range = bar_range.replace(
-        0,
-        np.nan
-    )
+    # 3. Bar Spread Ratio Normalized
+    bar_spread_abs = abs(bar_spread)
+    bar_spread_avg = get_average(bar_spread_abs, LOOKBACK, LOOKBACK_MA_TYPE)
+    bar_spread_ratio_n = normalize(bar_spread_abs, bar_spread_avg) * 100 * sign_spread
 
-    r2 = (
-        df["high"].rolling(2).max()
-        -
-        df["low"].rolling(2).min()
-    )
+    # 4. Bar Closing 2
+    barclosing_2 = (2 * (close - low.rolling(2).min()) / r2 * 100) - 100
 
-    r2 = r2.replace(
-        0,
-        np.nan
-    )
+    # 5. Shift 2 Bar to R2
+    shift2bar_to_r2 = src_shift / r2 * 100
 
-    src_shift = df["close"].diff()
+    # 6. Shift Ratio Normalized
+    src_shift_abs = abs(src_shift)
+    srcshift_avg = get_average(src_shift_abs, LOOKBACK, LOOKBACK_MA_TYPE)
+    srcshift_ratio_n = normalize(src_shift_abs, srcshift_avg) * 100 * sign_shift
 
-    # --------------------------------------------------------
-    # SIGNS
-    # --------------------------------------------------------
-
-    sign_spread = np.where(
-        bar_spread >= 0,
-        1,
-        -1
-    )
-
-    sign_shift = np.where(
-        src_shift >= 0,
-        1,
-        -1
-    )
-
-    # --------------------------------------------------------
-    # BAR CLOSING
-    # --------------------------------------------------------
-
-    barclosing = (
-        2
-        *
-        (
-            (
-                df["close"] -
-                df["low"]
-            )
-            /
-            bar_range
-        )
-        * 100
-    ) - 100
-
-    # --------------------------------------------------------
-    # SPREAD / RANGE
-    # --------------------------------------------------------
-
-    s2r = (
-        bar_spread /
-        bar_range
-    ) * 100
-
-    # --------------------------------------------------------
-    # SPREAD RATIO
-    # --------------------------------------------------------
-
-    spread_avg = get_average(
-        abs(bar_spread),
-        LOOKBACK,
-        "SMA"
-    )
-
-    bar_spread_ratio_n = (
-        normalize(
-            abs(bar_spread),
-            spread_avg
-        )
-        * 100
-        * sign_spread
-    )
-
-    # --------------------------------------------------------
-    # 2 BAR CLOSING
-    # --------------------------------------------------------
-
-    low2 = (
-        df["low"]
-        .rolling(2)
-        .min()
-    )
-
-    barclosing_2 = (
-        2
-        *
-        (
-            (
-                df["close"] -
-                low2
-            )
-            /
-            r2
-        )
-        * 100
-    ) - 100
-
-    # --------------------------------------------------------
-    # SHIFT / R2
-    # --------------------------------------------------------
-
-    shift2bar_to_r2 = (
-        src_shift /
-        r2
-    ) * 100
-
-    # --------------------------------------------------------
-    # SHIFT RATIO
-    # --------------------------------------------------------
-
-    shift_avg = get_average(
-        abs(src_shift),
-        LOOKBACK,
-        "SMA"
-    )
-
-    srcshift_ratio_n = (
-        normalize(
-            abs(src_shift),
-            shift_avg
-        )
-        * 100
-        * sign_shift
-    )
-
-    # --------------------------------------------------------
-    # PRICE ACTION AVERAGE
-    # --------------------------------------------------------
-
+    # --- PRICE NORMALIZED ---
     pricea_n = (
-        s2r
-        +
-        barclosing
-        +
-        bar_spread_ratio_n
-        +
-        barclosing_2
-        +
-        shift2bar_to_r2
-        +
-        srcshift_ratio_n
+        barclosing + s2r + bar_spread_ratio_n +
+        barclosing_2 + shift2bar_to_r2 + srcshift_ratio_n
     ) / 6
 
-    # --------------------------------------------------------
-    # BAR FLOW
-    # --------------------------------------------------------
+    # --- BAR FLOW ---
+    bar_flow = pricea_n * vola_n / 100
 
-    bar_flow = (
-        pricea_n *
-        vola_n /
-        100
-    )
+    # --- BULLS / BEARS ---
+    bulls = bar_flow.clip(lower=0)
+    bears = (-bar_flow.clip(upper=0))
 
-    # --------------------------------------------------------
-    # BULL / BEAR
-    # --------------------------------------------------------
+    # Bulls / Bears Average với WMA (RROF)
+    bulls_avg = get_average(bulls, RROF_LENGTH, RROF_MA_TYPE)
+    bears_avg = get_average(bears, RROF_LENGTH, RROF_MA_TYPE)
 
-    bulls = bar_flow.clip(
-        lower=0
-    )
+    # --- RROF ---
+    dx = bulls_avg / bears_avg
+    rrof = 2 * (100 - 100 / (1 + dx)) - 100
 
-    bears = (
-        -bar_flow.clip(
-            upper=0
-        )
-    )
+    # --- RROF SMOOTH & SIGNAL ---
+    rrof_s = get_average(rrof, SMOOTH, "WMA")
+    signal = get_average(rrof_s, SIGNAL_LENGTH, SIGNAL_MA_TYPE)
 
-    # --------------------------------------------------------
-    # AVERAGE
-    # --------------------------------------------------------
-
-    bulls_avg = get_average(
-        bulls,
-        RROF_LENGTH,
-        RROF_MA_TYPE
-    )
-
-    bears_avg = get_average(
-        bears,
-        RROF_LENGTH,
-        RROF_MA_TYPE
-    )
-
-    # --------------------------------------------------------
-    # DX
-    # --------------------------------------------------------
-
-    bears_avg = bears_avg.replace(
-        0,
-        np.nan
-    )
-
-    dx = (
-        bulls_avg /
-        bears_avg
-    )
-
-    # --------------------------------------------------------
-    # RROF
-    # --------------------------------------------------------
-
-    rrof = (
-        2
-        *
-        (
-            100 -
-            (
-                100 /
-                (1 + dx)
-            )
-        )
-    ) - 100
-
-    # --------------------------------------------------------
-    # RROF SMOOTH
-    # --------------------------------------------------------
-
-    rrof_s = get_average(
-        rrof,
-        SMOOTH,
-        "WMA"
-    )
-
-    # --------------------------------------------------------
-    # SIGNAL
-    # --------------------------------------------------------
-
-    signal = get_average(
-        rrof_s,
-        SIGNAL_LENGTH,
-        SIGNAL_MA_TYPE
-    )
-
+    # --- GÁN VÀO DATAFRAME ---
     df["RROF"] = rrof
     df["RROF_S"] = rrof_s
     df["SIGNAL"] = signal
 
     return df
 
+# =========================================================
+# TELEGRAM
+# =========================================================
+def send_telegram(message):
+    """Gửi tin nhắn đến Telegram"""
+    if not BOT_TOKEN or not CHAT_ID:
+        print("⚠️ Chưa cấu hình Telegram Token hoặc Chat ID")
+        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    try:
+        r = requests.post(
+            url,
+            json={"chat_id": CHAT_ID, "text": message},
+            timeout=20
+        )
+        print(r.text)
+    except Exception as e:
+        print(f"❌ Lỗi gửi Telegram: {e}")
 
-# ============================================================
-# SIGNAL
-# ============================================================
-
+# =========================================================
+# CHECK SIGNAL
+# =========================================================
 def check_signal(df):
+    """Kiểm tra tín hiệu cắt của RROF_S và Signal"""
+    if len(df) < 5:
+        print("⚠️ Không đủ dữ liệu để kiểm tra tín hiệu")
+        return
 
-    if len(df) < 10:
-        return None
-
+    # Lấy 2 nến đã đóng gần nhất
     previous = df.iloc[-3]
     current = df.iloc[-2]
 
-    print()
-    print("=" * 70)
-    print("📊 RROF STATUS")
-    print("=" * 70)
+    prev_rrof = previous["RROF_S"]
+    prev_signal = previous["SIGNAL"]
+    curr_rrof = current["RROF_S"]
+    curr_signal = current["SIGNAL"]
 
-    print(f"Previous: RROF_S={previous['RROF_S']:.6f} SIGNAL={previous['SIGNAL']:.6f}")
-    print(f"Current : RROF_S={current['RROF_S']:.6f} SIGNAL={current['SIGNAL']:.6f}")
-    print(f"Volume  : {current['volume']:,.4f}")
-    print(f"Price   : {current['close']:.2f}")
+    print(f"\n⏱ TIMEFRAME: {TIMEFRAME}")
+    print(f"📊 Previous: RROF_S={prev_rrof:.4f}, SIGNAL={prev_signal:.4f}")
+    print(f"📊 Current:  RROF_S={curr_rrof:.4f}, SIGNAL={curr_signal:.4f}")
 
-    if previous["RROF_S"] <= previous["SIGNAL"] and current["RROF_S"] > current["SIGNAL"]:
-        return "LONG"
+    # LONG: RROF cắt lên trên Signal
+    if prev_rrof <= prev_signal and curr_rrof > curr_signal:
+        message = f"""
+🟢 XAUUSD LONG
 
-    if previous["RROF_S"] >= previous["SIGNAL"] and current["RROF_S"] < current["SIGNAL"]:
-        return "SHORT"
-
-    return None
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    print()
-    print("🚀 XAUUSDT.P RROF TRADINGVIEW SCANNER")
-    print("======================================")
-
-    df = load_data()
-
-    if df is None:
-        print("❌ Không lấy được dữ liệu từ TradingView")
-        sys.exit(1)
-
-    df = calculate_everex(df)
-
-    valid = df[["RROF", "RROF_S", "SIGNAL"]].dropna()
-
-    if len(valid) < 10:
-        print("❌ Không đủ dữ liệu để tính EVEREX")
-        sys.exit(1)
-
-    signal = check_signal(df)
-
-    if signal == "LONG":
-        message = (
-            "🟢 <b>XAUUSDT.P RROF LONG</b>\n\n"
-            f"⏱ Timeframe: 30m (TradingView)\n"
-            f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
-            f"📈 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
-            f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
-            f"📊 Volume: {df.iloc[-2]['volume']:,.2f}\n\n"
-            "🔔 RROF Smooth CROSS UP Signal"
-        )
+📊 RROF Smooth crossed ABOVE Signal
+⏱ Timeframe: {TIMEFRAME}
+💰 Price: {current['close']}
+🕐 Candle: {current['time']}
+"""
         send_telegram(message)
+        print("✅ Đã gửi tín hiệu LONG")
 
-    elif signal == "SHORT":
-        message = (
-            "🔴 <b>XAUUSDT.P RROF SHORT</b>\n\n"
-            f"⏱ Timeframe: 30m (TradingView)\n"
-            f"📊 RROF Smooth: {df.iloc[-2]['RROF_S']:.2f}\n"
-            f"📉 Signal: {df.iloc[-2]['SIGNAL']:.2f}\n"
-            f"💰 Close: {df.iloc[-2]['close']:.2f}\n"
-            f"📊 Volume: {df.iloc[-2]['volume']:,.2f}\n\n"
-            "🔔 RROF Smooth CROSS DOWN Signal"
-        )
+    # SHORT: RROF cắt xuống dưới Signal
+    elif prev_rrof >= prev_signal and curr_rrof < curr_signal:
+        message = f"""
+🔴 XAUUSD SHORT
+
+📊 RROF Smooth crossed BELOW Signal
+⏱ Timeframe: {TIMEFRAME}
+💰 Price: {current['close']}
+🕐 Candle: {current['time']}
+"""
         send_telegram(message)
+        print("✅ Đã gửi tín hiệu SHORT")
 
     else:
-        print()
-        print("🚫 NO NEW SIGNAL")
+        print("🚫 Không có tín hiệu.")
 
+# =========================================================
+# MAIN
+# =========================================================
+def main():
+    print("🚀 Bắt đầu quét tín hiệu...")
+    try:
+        df = get_gold_data()
+        df = calculate_everex(df)
+        df = df.dropna()
+        check_signal(df)
+    except Exception as e:
+        print(f"❌ Lỗi trong quá trình quét: {e}")
+        raise
 
 if __name__ == "__main__":
     main()
