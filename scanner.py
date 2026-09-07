@@ -435,15 +435,15 @@ def build_message(signal, current, symbol):
 
     message = (
         f"{direction} <b>{symbol}</b>\n\n"
-        f"📊 Source: OKX\n"
+        #f"📊 Source: OKX\n"
         f"⏱ Timeframe: {TIMEFRAME}\n\n"
         f"💰 Price: {current['close']:.2f}\n"
-        f"📊 Volume: {current['volume']:,.4f}\n\n"
-        f"RROF: {current['RROF']:.2f}\n"
-        f"RROF Smooth: {current['RROF_S']:.2f}\n"
-        f"Signal: {current['SIGNAL']:.2f}\n\n"
-        f"🕐 Candle:\n{current['timestamp']}\n\n"
-        f"🔔 {cross}"
+        #f"📊 Volume: {current['volume']:,.4f}\n\n"
+       # f"RROF: {current['RROF']:.2f}\n"
+       # f"RROF Smooth: {current['RROF_S']:.2f}\n"
+       # f"Signal: {current['SIGNAL']:.2f}\n\n"
+       # f"🕐 Candle:\n{current['timestamp']}\n\n"
+        #f"🔔 {cross}"
     )
 
     return message
