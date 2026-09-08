@@ -10,8 +10,8 @@ from datetime import datetime
 # CONFIG
 # ============================================================
 
-# Symbol mặc định, sẽ được tự động tìm nếu không hoạt động
-SYMBOL = "XAU-USDT"  # Ưu tiên dùng spot trước
+# Danh sách các symbol cần quét
+SYMBOLS = ["XAU-USDT", "ETH-USDT"]  # Có thể thêm coin khác vào đây
 
 TIMEFRAME = "15m"
 CANDLE_LIMIT = 200
@@ -57,7 +57,7 @@ def send_telegram(message):
         return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": message}
+    data = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
 
     try:
         response = requests.post(url, json=data, timeout=20)
@@ -75,12 +75,11 @@ def send_telegram(message):
 # OKX SYMBOL FINDER
 # ============================================================
 
-def find_xau_symbol():
-    """Tìm symbol XAU/USD trên OKX (ưu tiên Swap, sau đó Spot)"""
+def find_symbol(search_term):
+    """Tìm symbol trên OKX (ưu tiên Swap, sau đó Spot)"""
     print()
-    print("🔍 Đang tìm symbol XAU/USD trên OKX...")
+    print(f"🔍 Đang tìm {search_term} trên OKX...")
     
-    # Danh sách các loại instrument cần kiểm tra
     inst_types = ["SWAP", "SPOT"]
     
     for inst_type in inst_types:
@@ -98,15 +97,14 @@ def find_xau_symbol():
                 
             for inst in data['data']:
                 inst_id = inst.get('instId', '')
-                # Tìm symbol chứa XAU
-                if 'XAU' in inst_id:
+                if search_term in inst_id:
                     print(f"✅ Tìm thấy {inst_type}: {inst_id}")
                     return inst_id, inst_type
         except Exception as e:
             print(f"⚠️ Lỗi khi kiểm tra {inst_type}: {e}")
             continue
     
-    print("❌ Không tìm thấy symbol XAU/USD nào trên OKX")
+    print(f"❌ Không tìm thấy {search_term} trên OKX")
     return None, None
 
 # ============================================================
@@ -377,76 +375,89 @@ def calculate_everex(df):
 # SIGNAL CHECK
 # ============================================================
 
-def check_signal(df):
+def check_signal(df, symbol_name):
+    """Kiểm tra tín hiệu và trả về dict kết quả"""
+    result = {
+        'symbol': symbol_name,
+        'signal': None,
+        'price': None,
+        'timestamp': None,
+        'rrof': None,
+        'signal_line': None,
+        'volume': None
+    }
+    
     if len(df) < 20:
-        print("⚠️ Không đủ dữ liệu")
-        return None
+        print(f"⚠️ {symbol_name}: Không đủ dữ liệu")
+        return result
 
     # Lấy 2 nến đã đóng gần nhất
     confirmed = df[df["confirm"].astype(str) == "1"].copy()
 
     if len(confirmed) < 2:
-        print("⚠️ Không tìm đủ 2 nến đã đóng")
-        return None
+        print(f"⚠️ {symbol_name}: Không tìm đủ 2 nến đã đóng")
+        return result
 
     previous = confirmed.iloc[-2]
     current = confirmed.iloc[-1]
 
-    # STATUS
-    print()
-    print("=" * 70)
-    print("📊 RROF STATUS")
-    print("=" * 70)
-    print(f"Previous candle : {previous['timestamp']}")
-    print(f"Current candle  : {current['timestamp']}")
-    print()
-    print(f"Previous RROF_S : {previous['RROF_S']:.6f}")
-    print(f"Previous SIGNAL : {previous['SIGNAL']:.6f}")
-    print()
-    print(f"Current RROF_S  : {current['RROF_S']:.6f}")
-    print(f"Current SIGNAL  : {current['SIGNAL']:.6f}")
-    print()
-    print(f"Price           : {current['close']:.2f}")
-    print(f"Volume          : {current['volume']:,.4f}")
+    # Lưu thông tin
+    result['price'] = float(current['close'])
+    result['timestamp'] = current['timestamp']
+    result['rrof'] = float(current['RROF'])
+    result['signal_line'] = float(current['SIGNAL'])
+    result['volume'] = float(current['volume'])
 
     # CROSS UP (LONG)
     if previous["RROF_S"] <= previous["SIGNAL"] and current["RROF_S"] > current["SIGNAL"]:
-        print()
-        print("🟢 CROSS UP → LONG")
-        return "LONG", current
+        print(f"🟢 {symbol_name}: CROSS UP → LONG")
+        result['signal'] = 'LONG'
+        return result
 
     # CROSS DOWN (SHORT)
     if previous["RROF_S"] >= previous["SIGNAL"] and current["RROF_S"] < current["SIGNAL"]:
-        print()
-        print("🔴 CROSS DOWN → SHORT")
-        return "SHORT", current
+        print(f"🔴 {symbol_name}: CROSS DOWN → SHORT")
+        result['signal'] = 'SHORT'
+        return result
 
-    print()
-    print("🚫 NO NEW SIGNAL")
-    return None, None
+    print(f"🚫 {symbol_name}: NO SIGNAL")
+    return result
 
 # ============================================================
-# BUILD TELEGRAM MESSAGE
+# BUILD TELEGRAM MESSAGE (GỘP TẤT CẢ TÍN HIỆU)
 # ============================================================
 
-def build_message(signal, current, symbol):
-    direction = " log" if signal == "LONG" else "sho"
-    cross = "RROF Smooth CROSS UP Signal" if signal == "LONG" else "RROF Smooth CROSS DOWN Signal"
-
-    message = (
-        f"{direction} <b>{symbol}</b>\n\n"
-        #f"📊 Source: OKX\n"
-        f" Timeframe: {TIMEFRAME}\n\n"
-        f" Price: {current['close']:.2f}\n"
-        #f"📊 Volume: {current['volume']:,.4f}\n\n"
-        f"RROF: {current['RROF']:.2f}"
-       # f"RROF Smooth: {current['RROF_S']:.2f}\n"
-        f"Signal: {current['SIGNAL']:.2f}\n\n"
-       # f"🕐 Candle:\n{current['timestamp']}\n\n"
-        #f"🔔 {cross}"
-    )
-
-    return message
+def build_message(results):
+    """Gộp tất cả tín hiệu vào một tin nhắn Telegram"""
+    signals = [r for r in results if r['signal'] is not None]
+    
+    if not signals:
+        return None
+    
+    # Lấy thời gian hiện tại
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Đếm số lượng LONG và SHORT
+    long_count = sum(1 for s in signals if s['signal'] == 'LONG')
+    short_count = sum(1 for s in signals if s['signal'] == 'SHORT')
+    
+    # Xây dựng tiêu đề
+    header = f"📊 <b>TÍN HIỆU GIAO DỊCH</b>\n"
+    header += f"⏱ {current_time} | {TIMEFRAME}\n"
+    header += f"🟢 LONG: {long_count} | 🔴 SHORT: {short_count}\n"
+    header += "=" * 35 + "\n\n"
+    
+    # Xây dựng nội dung từng coin
+    body = ""
+    for s in signals:
+        emoji = "🟢" if s['signal'] == 'LONG' else "🔴"
+        body += f"{emoji} <b>{s['symbol']}</b>\n"
+        body += f"   Signal: {s['signal']}\n"
+        body += f"   Price: {s['price']:.2f}\n"
+        body += f"   RROF: {s['rrof']:.2f} | Signal: {s['signal_line']:.2f}\n"
+        body += f"   Vol: {s['volume']:,.0f}\n\n"
+    
+    return header + body
 
 # ============================================================
 # MAIN
@@ -454,66 +465,62 @@ def build_message(signal, current, symbol):
 
 def main():
     print()
-    print("🚀 GOLD RROF OKX SCANNER")
+    print("🚀 MULTI-COIN RROF OKX SCANNER")
     print("==========================================")
     print(f"Timeframe : {TIMEFRAME}")
     print(f"Candles   : {CANDLE_LIMIT}")
+    print(f"Symbols   : {SYMBOLS}")
     print("==========================================")
 
     check_telegram_config()
 
-    # Tìm symbol XAU/USD trên OKX
-    global SYMBOL
-    found_symbol, inst_type = find_xau_symbol()
+    results = []
     
-    if found_symbol:
-        SYMBOL = found_symbol
-        print(f"✅ Sử dụng symbol: {SYMBOL} ({inst_type})")
-    else:
-        print("❌ Không tìm thấy symbol XAU/USD trên OKX")
-        sys.exit(1)
+    for search_term in SYMBOLS:
+        print(f"\n{'='*70}")
+        print(f"🔍 Đang quét: {search_term}")
+        print('='*70)
+        
+        # Tìm symbol trên OKX
+        found_symbol, inst_type = find_symbol(search_term)
+        
+        if not found_symbol:
+            print(f"❌ Không tìm thấy {search_term} trên OKX")
+            continue
+            
+        # LOAD DATA
+        try:
+            df = get_okx_candles(found_symbol, inst_type)
+        except Exception as e:
+            print(f"❌ DATA ERROR for {search_term}: {e}")
+            continue
 
-    # LOAD DATA
-    try:
-        df = get_okx_candles(SYMBOL, inst_type)
-    except Exception as e:
+        if df is None:
+            print(f"❌ Không lấy được dữ liệu cho {search_term}")
+            continue
+
+        # CALCULATE EVEREX
+        print("🧮 Calculating EVEREX / RROF...")
+        try:
+            df = calculate_everex(df)
+        except Exception as e:
+            print(f"❌ EVEREX ERROR: {e}")
+            continue
+
+        # CHECK SIGNAL
+        result = check_signal(df, search_term)
+        results.append(result)
+
+    # SEND TELEGRAM (gộp tất cả tín hiệu)
+    message = build_message(results)
+    
+    if message:
         print()
-        print(f"❌ DATA ERROR: {e}")
-        sys.exit(1)
-
-    if df is None:
-        print("❌ Không lấy được dữ liệu")
-        sys.exit(1)
-
-    # CALCULATE EVEREX
-    print()
-    print("🧮 Calculating EVEREX / RROF...")
-    try:
-        df = calculate_everex(df)
-    except Exception as e:
-        print()
-        print(f"❌ EVEREX ERROR: {e}")
-        sys.exit(1)
-
-    # VALIDATION
-    valid = df[["RROF", "RROF_S", "SIGNAL"]].dropna()
-    print(f"✅ Valid RROF rows: {len(valid)}")
-    if len(valid) < 20:
-        print("❌ Không đủ dữ liệu để tính RROF")
-        sys.exit(1)
-
-    # CHECK SIGNAL
-    signal, current = check_signal(df)
-
-    # SEND TELEGRAM
-    if signal in ["LONG", "SHORT"]:
-        message = build_message(signal, current, SYMBOL)
-        print()
-        print("📨 Sending Telegram...")
+        print("📨 Sending combined Telegram...")
         send_telegram(message)
     else:
         print()
-        print("ℹ️ Không gửi Telegram vì không có tín hiệu mới.")
+        print("ℹ️ Không có tín hiệu mới. Không gửi Telegram.")
 
     print()
     print("✅ Scanner completed.")
