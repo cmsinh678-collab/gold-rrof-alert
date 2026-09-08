@@ -442,8 +442,8 @@ def build_message(results):
     short_count = sum(1 for s in signals if s['signal'] == 'SHORT')
     
     # Xây dựng tiêu đề
-    #header = f"📊 <b>TÍN HIỆU GIAO DỊCH</b>\n"
-    #header += f"⏱ {current_time} | {TIMEFRAME}\n"
+    header = f"📊 <b>\n"
+    header += f"⏱ {current_time} | {TIMEFRAME}\n"
     header += f" LONG: {long_count} |  SHORT: {short_count}\n"
     header += "=" * 35 + "\n\n"
     
