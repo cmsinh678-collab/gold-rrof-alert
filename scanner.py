@@ -13,7 +13,7 @@ from datetime import datetime
 # Danh sách các symbol cần quét
 SYMBOLS = ["XAU-USDT", "ETH-USDT"]  # Có thể thêm coin khác vào đây
 
-TIMEFRAME = "15m"
+TIMEFRAME = "30m"
 CANDLE_LIMIT = 200
 
 # OKX API
@@ -410,13 +410,13 @@ def check_signal(df, symbol_name):
 
     # CROSS UP (LONG)
     if previous["RROF_S"] <= previous["SIGNAL"] and current["RROF_S"] > current["SIGNAL"]:
-        print(f"🟢 {symbol_name}: CROSS UP → LONG")
+        print(f" {symbol_name}: CROSS UP → LONG")
         result['signal'] = 'LONG'
         return result
 
     # CROSS DOWN (SHORT)
     if previous["RROF_S"] >= previous["SIGNAL"] and current["RROF_S"] < current["SIGNAL"]:
-        print(f"🔴 {symbol_name}: CROSS DOWN → SHORT")
+        print(f" {symbol_name}: CROSS DOWN → SHORT")
         result['signal'] = 'SHORT'
         return result
 
@@ -442,15 +442,15 @@ def build_message(results):
     short_count = sum(1 for s in signals if s['signal'] == 'SHORT')
     
     # Xây dựng tiêu đề
-    header = f"📊 <b>TÍN HIỆU GIAO DỊCH</b>\n"
-    header += f"⏱ {current_time} | {TIMEFRAME}\n"
-    header += f"🟢 LONG: {long_count} | 🔴 SHORT: {short_count}\n"
+    #header = f"📊 <b>TÍN HIỆU GIAO DỊCH</b>\n"
+    #header += f"⏱ {current_time} | {TIMEFRAME}\n"
+    header += f" LONG: {long_count} |  SHORT: {short_count}\n"
     header += "=" * 35 + "\n\n"
     
     # Xây dựng nội dung từng coin
     body = ""
     for s in signals:
-        emoji = "🟢" if s['signal'] == 'LONG' else "🔴"
+        emoji = "" if s['signal'] == 'LONG' else ""
         body += f"{emoji} <b>{s['symbol']}</b>\n"
         body += f"   Signal: {s['signal']}\n"
         body += f"   Price: {s['price']:.2f}\n"
