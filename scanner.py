@@ -13,7 +13,7 @@ from datetime import datetime
 # Danh sách các symbol cần quét
 SYMBOLS = ["XAU-USDT", "ETH-USDT"]  # Có thể thêm coin khác vào đây
 
-TIMEFRAME = "30m"
+TIMEFRAME = "15m"
 CANDLE_LIMIT = 200
 
 # OKX API
