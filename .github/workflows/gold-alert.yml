@@ -4,7 +4,7 @@ on:
 
   schedule:
     # Chạy mỗi 15 phút
-    - cron: "*/15 * * * *"
+    - cron: "*/30 * * * *"
 
   workflow_dispatch:
 
