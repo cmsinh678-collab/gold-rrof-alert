@@ -11,7 +11,7 @@ from datetime import datetime
 # ============================================================
 
 # Danh sách các symbol cần quét
-SYMBOLS = ["XAU-USDT", "ETH-USDT"]  # Có thể thêm coin khác vào đây
+SYMBOLS = ["XAU-USDT", "ETH-USDT"]
 
 TIMEFRAME = "15m"
 CANDLE_LIMIT = 200
@@ -57,7 +57,7 @@ def send_telegram(message):
         return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
+    data = {"chat_id": CHAT_ID, "text": message}
 
     try:
         response = requests.post(url, json=data, timeout=20)
@@ -161,9 +161,6 @@ def get_okx_candles(symbol, inst_type="SPOT"):
 
     print(f"✅ Raw candles: {len(candles)}")
 
-    # OKX CANDLE FORMAT:
-    # [timestamp, open, high, low, close, volume, volume_currency, volume_quote, confirm]
-
     rows = []
     for candle in candles:
         if len(candle) < 9:
@@ -185,23 +182,18 @@ def get_okx_candles(symbol, inst_type="SPOT"):
 
     df = pd.DataFrame(rows)
 
-    # Convert numeric columns
     numeric_columns = ["open", "high", "low", "close", "volume", "volume_currency", "volume_quote"]
     for column in numeric_columns:
         df[column] = pd.to_numeric(df[column], errors="coerce")
 
-    # Convert timestamp
     df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"], errors="coerce"), unit="ms", utc=True)
 
-    # Sort and deduplicate
     df = df.sort_values("timestamp")
     df = df.drop_duplicates(subset=["timestamp"])
     df = df.reset_index(drop=True)
 
-    # Remove invalid rows
     df = df.dropna(subset=["timestamp", "open", "high", "low", "close", "volume"])
 
-    # Volume check
     print()
     print("=" * 70)
     print("🔊 OKX VOLUME CHECK")
@@ -214,7 +206,6 @@ def get_okx_candles(symbol, inst_type="SPOT"):
     if (df["volume"] <= 0).all():
         raise Exception("Volume OKX không hợp lệ")
 
-    # Candle status
     print()
     print("=" * 70)
     print("🕯 CANDLE STATUS")
@@ -222,7 +213,6 @@ def get_okx_candles(symbol, inst_type="SPOT"):
     print(f"Latest confirm: {df.iloc[-1]['confirm']}")
     print("0 = chưa đóng, 1 = đã đóng")
 
-    # Last candles
     print()
     print("=" * 70)
     print("📋 LAST 5 CANDLES")
@@ -296,75 +286,51 @@ def calculate_everex(df):
     close = df["close"]
     volume = df["volume"]
 
-    # VOLUME
     vola = get_average(volume, LOOKBACK, LOOKBACK_MA_TYPE)
     vola_n = normalize(volume, vola) * 100
 
-    # PRICE
     bar_spread = close - open_
     bar_range = high - low
     bar_range = bar_range.replace(0, np.nan)
 
-    # R2
     r2 = high.rolling(2).max() - low.rolling(2).min()
     r2 = r2.replace(0, np.nan)
 
-    # SHIFT
     src_shift = close.diff()
     sign_spread = np.sign(bar_spread)
     sign_shift = np.sign(src_shift)
 
-    # BAR CLOSING
     barclosing = (2 * (close - low) / bar_range * 100) - 100
-
-    # SPREAD / RANGE
     s2r = bar_spread / bar_range * 100
 
-    # SPREAD RATIO
     bar_spread_abs = abs(bar_spread)
     bar_spread_avg = get_average(bar_spread_abs, LOOKBACK, LOOKBACK_MA_TYPE)
     bar_spread_ratio_n = normalize(bar_spread_abs, bar_spread_avg) * 100 * sign_spread
 
-    # 2 BAR CLOSING
     low2 = low.rolling(2).min()
     barclosing_2 = (2 * (close - low2) / r2 * 100) - 100
-
-    # SHIFT / R2
     shift2bar_to_r2 = src_shift / r2 * 100
 
-    # SHIFT RATIO
     src_shift_abs = abs(src_shift)
     srcshift_avg = get_average(src_shift_abs, LOOKBACK, LOOKBACK_MA_TYPE)
     srcshift_ratio_n = normalize(src_shift_abs, srcshift_avg) * 100 * sign_shift
 
-    # PRICE NORMALIZED
     pricea_n = (barclosing + s2r + bar_spread_ratio_n + barclosing_2 + shift2bar_to_r2 + srcshift_ratio_n) / 6
-
-    # BAR FLOW
     bar_flow = pricea_n * vola_n / 100
 
-    # BULLS / BEARS
     bulls = bar_flow.clip(lower=0)
     bears = (-bar_flow.clip(upper=0))
 
-    # BULLS / BEARS AVERAGE
     bulls_avg = get_average(bulls, RROF_LENGTH, RROF_MA_TYPE)
     bears_avg = get_average(bears, RROF_LENGTH, RROF_MA_TYPE)
 
-    # RATIO
     bears_avg = bears_avg.replace(0, np.nan)
     dx = bulls_avg / bears_avg
 
-    # RROF
     rrof = 2 * (100 - 100 / (1 + dx)) - 100
-
-    # RROF SMOOTH
     rrof_s = get_average(rrof, SMOOTH, "WMA")
-
-    # SIGNAL
     signal = get_average(rrof_s, SIGNAL_LENGTH, SIGNAL_MA_TYPE)
 
-    # SAVE
     df["RROF"] = rrof
     df["RROF_S"] = rrof_s
     df["SIGNAL"] = signal
@@ -391,7 +357,6 @@ def check_signal(df, symbol_name):
         print(f"⚠️ {symbol_name}: Không đủ dữ liệu")
         return result
 
-    # Lấy 2 nến đã đóng gần nhất
     confirmed = df[df["confirm"].astype(str) == "1"].copy()
 
     if len(confirmed) < 2:
@@ -401,22 +366,19 @@ def check_signal(df, symbol_name):
     previous = confirmed.iloc[-2]
     current = confirmed.iloc[-1]
 
-    # Lưu thông tin
     result['price'] = float(current['close'])
     result['timestamp'] = current['timestamp']
     result['rrof'] = float(current['RROF'])
     result['signal_line'] = float(current['SIGNAL'])
     result['volume'] = float(current['volume'])
 
-    # CROSS UP (LONG)
     if previous["RROF_S"] <= previous["SIGNAL"] and current["RROF_S"] > current["SIGNAL"]:
-        print(f" {symbol_name}: CROSS UP → LONG")
+        print(f"🟢 {symbol_name}: CROSS UP → LONG")
         result['signal'] = 'LONG'
         return result
 
-    # CROSS DOWN (SHORT)
     if previous["RROF_S"] >= previous["SIGNAL"] and current["RROF_S"] < current["SIGNAL"]:
-        print(f" {symbol_name}: CROSS DOWN → SHORT")
+        print(f"🔴 {symbol_name}: CROSS DOWN → SHORT")
         result['signal'] = 'SHORT'
         return result
 
@@ -424,40 +386,23 @@ def check_signal(df, symbol_name):
     return result
 
 # ============================================================
-# BUILD TELEGRAM MESSAGE (GỘP TẤT CẢ TÍN HIỆU)
+# BUILD TELEGRAM MESSAGE - ĐƠN GIẢN NHẤT
 # ============================================================
 
 def build_message(results):
-    """Gộp tất cả tín hiệu vào một tin nhắn Telegram"""
+    """Gửi tin nhắn đơn giản: long/short symbol price signal rrof"""
     signals = [r for r in results if r['signal'] is not None]
     
     if not signals:
         return None
     
-    # Lấy thời gian hiện tại
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    # Đếm số lượng LONG và SHORT
-    long_count = sum(1 for s in signals if s['signal'] == 'LONG')
-    short_count = sum(1 for s in signals if s['signal'] == 'SHORT')
-    
-    # Xây dựng tiêu đề
-    header = f"📊 <b>\n"
-    header += f"⏱ {current_time} | {TIMEFRAME}\n"
-    header += f" LONG: {long_count} |  SHORT: {short_count}\n"
-    header += "=" * 35 + "\n\n"
-    
-    # Xây dựng nội dung từng coin
-    body = ""
+    lines = []
     for s in signals:
-        emoji = "" if s['signal'] == 'LONG' else ""
-        body += f"{emoji} <b>{s['symbol']}</b>\n"
-        body += f"   Signal: {s['signal']}\n"
-        body += f"   Price: {s['price']:.2f}\n"
-        body += f"   RROF: {s['rrof']:.2f} | Signal: {s['signal_line']:.2f}\n"
-        body += f"   Vol: {s['volume']:,.0f}\n\n"
+        # Định dạng: long xau price signal rrof
+        line = f"{s['signal'].lower()} {s['symbol']} {s['price']:.2f} {s['signal_line']:.2f} {s['rrof']:.2f}"
+        lines.append(line)
     
-    return header + body
+    return "\n".join(lines)
 
 # ============================================================
 # MAIN
@@ -481,14 +426,12 @@ def main():
         print(f"🔍 Đang quét: {search_term}")
         print('='*70)
         
-        # Tìm symbol trên OKX
         found_symbol, inst_type = find_symbol(search_term)
         
         if not found_symbol:
             print(f"❌ Không tìm thấy {search_term} trên OKX")
             continue
             
-        # LOAD DATA
         try:
             df = get_okx_candles(found_symbol, inst_type)
         except Exception as e:
@@ -499,7 +442,6 @@ def main():
             print(f"❌ Không lấy được dữ liệu cho {search_term}")
             continue
 
-        # CALCULATE EVEREX
         print("🧮 Calculating EVEREX / RROF...")
         try:
             df = calculate_everex(df)
@@ -507,16 +449,14 @@ def main():
             print(f"❌ EVEREX ERROR: {e}")
             continue
 
-        # CHECK SIGNAL
         result = check_signal(df, search_term)
         results.append(result)
 
-    # SEND TELEGRAM (gộp tất cả tín hiệu)
     message = build_message(results)
     
     if message:
         print()
-        print("📨 Sending combined Telegram...")
+        print("📨 Sending Telegram...")
         send_telegram(message)
     else:
         print()
