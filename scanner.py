@@ -387,7 +387,7 @@ def check_signal(df, symbol_name):
         timestamp_key = td1['timestamp'].strftime('%Y%m%d%H%M')
         if not is_signal_reported(symbol_name, 'LONG', timestamp_key):
             print(f"🟢 {symbol_name}: CẮT LÊN (LONG) tại nến TD1 {td1['timestamp']}")
-            result['signal'] = 'LONG'
+            result['signal'] = 'LOG'
             mark_signal_reported(symbol_name, 'LONG', timestamp_key)
             return result
         else:
@@ -399,7 +399,7 @@ def check_signal(df, symbol_name):
         timestamp_key = td1['timestamp'].strftime('%Y%m%d%H%M')
         if not is_signal_reported(symbol_name, 'SHORT', timestamp_key):
             print(f"🔴 {symbol_name}: CẮT XUỐNG (SHORT) tại nến TD1 {td1['timestamp']}")
-            result['signal'] = 'SHORT'
+            result['signal'] = 'SHO'
             mark_signal_reported(symbol_name, 'SHORT', timestamp_key)
             return result
         else:
