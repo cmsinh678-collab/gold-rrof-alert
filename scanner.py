@@ -5,14 +5,13 @@ import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import json
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-# Danh sách các symbol cần quét
 SYMBOLS = ["XAU-USDT", "ETH-USDT"]
-
 TIMEFRAME = "15m"
 CANDLE_LIMIT = 200
 
@@ -40,15 +39,44 @@ LOOKBACK_MA_TYPE = "SMA"
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# File lưu trạng thái tín hiệu đã báo
+STATE_FILE = "signal_state.json"
+
+# ============================================================
+# STATE MANAGEMENT
+# ============================================================
+
+def load_state():
+    """Đọc trạng thái tín hiệu đã báo từ file"""
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_state(state):
+    """Lưu trạng thái tín hiệu đã báo vào file"""
+    with open(STATE_FILE, 'w') as f:
+        json.dump(state, f)
+
+def is_signal_reported(symbol, signal_type, timestamp):
+    """Kiểm tra tín hiệu đã được báo chưa"""
+    state = load_state()
+    key = f"{symbol}_{signal_type}_{timestamp}"
+    return state.get(key, False)
+
+def mark_signal_reported(symbol, signal_type, timestamp):
+    """Đánh dấu tín hiệu đã được báo"""
+    state = load_state()
+    key = f"{symbol}_{signal_type}_{timestamp}"
+    state[key] = True
+    save_state(state)
+
 # ============================================================
 # TELEGRAM FUNCTIONS
 # ============================================================
-
-def check_telegram_config():
-    if not BOT_TOKEN:
-        print("⚠️ TELEGRAM_BOT_TOKEN chưa được thiết lập")
-    if not CHAT_ID:
-        print("⚠️ TELEGRAM_CHAT_ID chưa được thiết lập")
 
 def send_telegram(message):
     if not BOT_TOKEN or not CHAT_ID:
@@ -76,7 +104,6 @@ def send_telegram(message):
 # ============================================================
 
 def find_symbol(search_term):
-    """Tìm symbol trên OKX (ưu tiên Swap, sau đó Spot)"""
     print()
     print(f"🔍 Đang tìm {search_term} trên OKX...")
     
@@ -112,14 +139,10 @@ def find_symbol(search_term):
 # ============================================================
 
 def get_okx_candles(symbol, inst_type="SPOT"):
-    """Lấy dữ liệu nến từ OKX"""
     print()
     print("=" * 70)
     print(f"📥 OKX {symbol} ({inst_type})")
     print("=" * 70)
-    print(f"Symbol    : {symbol}")
-    print(f"Timeframe : {TIMEFRAME}")
-    print(f"Limit     : {CANDLE_LIMIT}")
 
     params = {
         "instId": symbol,
@@ -132,15 +155,10 @@ def get_okx_candles(symbol, inst_type="SPOT"):
         "Accept": "application/json"
     }
 
-    print()
-    print("▶️ Calling OKX API...")
-
     try:
         response = requests.get(OKX_CANDLES_URL, params=params, headers=headers, timeout=30)
     except requests.RequestException as e:
         raise Exception(f"OKX connection error: {e}")
-
-    print(f"HTTP Status: {response.status_code}")
 
     if response.status_code != 200:
         print(response.text)
@@ -158,8 +176,6 @@ def get_okx_candles(symbol, inst_type="SPOT"):
     candles = data.get("data", [])
     if not candles:
         raise Exception("OKX không trả về candles")
-
-    print(f"✅ Raw candles: {len(candles)}")
 
     rows = []
     for candle in candles:
@@ -194,34 +210,9 @@ def get_okx_candles(symbol, inst_type="SPOT"):
 
     df = df.dropna(subset=["timestamp", "open", "high", "low", "close", "volume"])
 
-    print()
-    print("=" * 70)
-    print("🔊 OKX VOLUME CHECK")
-    print("=" * 70)
-    print(f"Volume min : {df['volume'].min():,.4f}")
-    print(f"Volume max : {df['volume'].max():,.4f}")
-    print(f"Volume avg : {df['volume'].mean():,.4f}")
-    print(f"Zero       : {(df['volume'] == 0).sum()}")
-
-    if (df["volume"] <= 0).all():
-        raise Exception("Volume OKX không hợp lệ")
-
-    print()
-    print("=" * 70)
-    print("🕯 CANDLE STATUS")
-    print("=" * 70)
-    print(f"Latest confirm: {df.iloc[-1]['confirm']}")
-    print("0 = chưa đóng, 1 = đã đóng")
-
-    print()
-    print("=" * 70)
-    print("📋 LAST 5 CANDLES")
-    print("=" * 70)
-    print(df.tail(5)[["timestamp", "open", "high", "low", "close", "volume", "confirm"]].to_string(index=False))
-
-    print()
+    print(f"✅ Lấy thành công {len(df)} candles")
     print(f"💰 Last price: {df.iloc[-1]['close']:.2f}")
-    print(f"📊 Last volume: {df.iloc[-1]['volume']:,.4f}")
+    print(f"🕯 Nến cuối confirm: {df.iloc[-1]['confirm']} (0=đang mở, 1=đã đóng)")
 
     return df
 
@@ -338,11 +329,16 @@ def calculate_everex(df):
     return df
 
 # ============================================================
-# SIGNAL CHECK
+# SIGNAL CHECK - PHÁT HIỆN CẮT GIỮA TD2 VÀ TD1
 # ============================================================
 
 def check_signal(df, symbol_name):
-    """Kiểm tra tín hiệu và trả về dict kết quả"""
+    """
+    Phát hiện tín hiệu cắt giữa 2 nến đã đóng gần nhất:
+    - TD2: nến -2 (đã đóng)
+    - TD1: nến -1 (đã đóng)
+    Bỏ qua nến HT (nến 0 đang mở)
+    """
     result = {
         'symbol': symbol_name,
         'signal': None,
@@ -350,47 +346,74 @@ def check_signal(df, symbol_name):
         'timestamp': None,
         'rrof': None,
         'signal_line': None,
-        'volume': None
+        'volume': None,
+        'signal_timestamp': None
     }
     
     if len(df) < 20:
         print(f"⚠️ {symbol_name}: Không đủ dữ liệu")
         return result
 
+    # Lấy tất cả nến đã đóng
     confirmed = df[df["confirm"].astype(str) == "1"].copy()
 
     if len(confirmed) < 2:
         print(f"⚠️ {symbol_name}: Không tìm đủ 2 nến đã đóng")
         return result
 
-    previous = confirmed.iloc[-2]
-    current = confirmed.iloc[-1]
+    # Lấy 2 nến đã đóng gần nhất: TD1 và TD2
+    td1 = confirmed.iloc[-1]   # nến -1 (vừa đóng)
+    td2 = confirmed.iloc[-2]   # nến -2 (đóng trước đó)
 
-    result['price'] = float(current['close'])
-    result['timestamp'] = current['timestamp']
-    result['rrof'] = float(current['RROF'])
-    result['signal_line'] = float(current['SIGNAL'])
-    result['volume'] = float(current['volume'])
+    # In thông tin debug
+    print(f"📊 TD2 (nến -2): {td2['timestamp']} | RROF_S={td2['RROF_S']:.2f}, SIGNAL={td2['SIGNAL']:.2f}")
+    print(f"📊 TD1 (nến -1): {td1['timestamp']} | RROF_S={td1['RROF_S']:.2f}, SIGNAL={td1['SIGNAL']:.2f}")
+    
+    # Lấy thông tin nến HT (đang mở)
+    ht = df.iloc[-1]
+    print(f"🕯 Nến HT (đang mở): {ht['timestamp']} | confirm={ht['confirm']}")
 
-    if previous["RROF_S"] <= previous["SIGNAL"] and current["RROF_S"] > current["SIGNAL"]:
-        print(f"🟢 {symbol_name}: CROSS UP → LONG")
-        result['signal'] = 'LONG'
-        return result
+    # Lưu thông tin kết quả (lấy từ TD1 - nến vừa đóng)
+    result['price'] = float(td1['close'])
+    result['timestamp'] = td1['timestamp']
+    result['rrof'] = float(td1['RROF'])
+    result['signal_line'] = float(td1['SIGNAL'])
+    result['volume'] = float(td1['volume'])
+    result['signal_timestamp'] = td1['timestamp']
 
-    if previous["RROF_S"] >= previous["SIGNAL"] and current["RROF_S"] < current["SIGNAL"]:
-        print(f"🔴 {symbol_name}: CROSS DOWN → SHORT")
-        result['signal'] = 'SHORT'
-        return result
+    # --- KIỂM TRA CẮT GIỮA TD2 VÀ TD1 ---
+    # LONG: TD2 <= Signal, TD1 > Signal
+    if td2["RROF_S"] <= td2["SIGNAL"] and td1["RROF_S"] > td1["SIGNAL"]:
+        timestamp_key = td1['timestamp'].strftime('%Y%m%d%H%M')
+        if not is_signal_reported(symbol_name, 'LONG', timestamp_key):
+            print(f"🟢 {symbol_name}: CẮT LÊN (LONG) tại nến TD1 {td1['timestamp']}")
+            result['signal'] = 'LONG'
+            mark_signal_reported(symbol_name, 'LONG', timestamp_key)
+            return result
+        else:
+            print(f"ℹ️ {symbol_name}: Tín hiệu LONG đã báo trước đó")
+            return result
 
-    print(f"🚫 {symbol_name}: NO SIGNAL")
+    # SHORT: TD2 >= Signal, TD1 < Signal
+    if td2["RROF_S"] >= td2["SIGNAL"] and td1["RROF_S"] < td1["SIGNAL"]:
+        timestamp_key = td1['timestamp'].strftime('%Y%m%d%H%M')
+        if not is_signal_reported(symbol_name, 'SHORT', timestamp_key):
+            print(f"🔴 {symbol_name}: CẮT XUỐNG (SHORT) tại nến TD1 {td1['timestamp']}")
+            result['signal'] = 'SHORT'
+            mark_signal_reported(symbol_name, 'SHORT', timestamp_key)
+            return result
+        else:
+            print(f"ℹ️ {symbol_name}: Tín hiệu SHORT đã báo trước đó")
+            return result
+
+    print(f"🚫 {symbol_name}: Không có cắt giữa TD2 và TD1")
     return result
 
 # ============================================================
-# BUILD TELEGRAM MESSAGE - ĐƠN GIẢN NHẤT
+# BUILD TELEGRAM MESSAGE - ĐƠN GIẢN
 # ============================================================
 
 def build_message(results):
-    """Gửi tin nhắn đơn giản: long/short symbol price signal rrof"""
     signals = [r for r in results if r['signal'] is not None]
     
     if not signals:
@@ -413,11 +436,8 @@ def main():
     print("🚀 MULTI-COIN RROF OKX SCANNER")
     print("==========================================")
     print(f"Timeframe : {TIMEFRAME}")
-    print(f"Candles   : {CANDLE_LIMIT}")
     print(f"Symbols   : {SYMBOLS}")
     print("==========================================")
-
-    check_telegram_config()
 
     results = []
     
