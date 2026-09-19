@@ -590,35 +590,53 @@ def check_rrof_signal(df, symbol):
 # STOP HUNT — CHỈ CÓ 1 ĐỊNH NGHĨA DUY NHẤT
 # ============================================================
 
-def bull_rejection(o_swing, low_swing, close_now):
-    if o_swing <= 0 or low_swing <= 0:
+# ============================================================
+# STOP HUNT — ĐO TỪ CLOSE NẾN TRƯỚC (đúng price action)
+# ============================================================
+
+def bull_rejection(ref_price, low_swing, close_now):
+    """
+    Bullish Stop Hunt — đo từ close nến TRƯỚC cửa sổ.
+    
+    ref_price : close của nến ngay trước cửa sổ
+    low_swing : đáy thấp nhất trong cửa sổ
+    close_now : close nến cuối cửa sổ
+    """
+    if ref_price <= 0 or low_swing <= 0:
         return None
 
-    sweep = (o_swing - low_swing) / o_swing * 100
+    sweep = (ref_price - low_swing) / ref_price * 100
     recover = (close_now - low_swing) / low_swing * 100
 
     if sweep < STOP_HUNT_SWEEP_PCT:
         return None
     if recover < STOP_HUNT_RECOVER_PCT:
         return None
-    if STOP_HUNT_REQUIRE_DIRECTIONAL_CLOSE and close_now <= o_swing:
+    if STOP_HUNT_REQUIRE_DIRECTIONAL_CLOSE and close_now <= ref_price:
         return None
 
     return sweep, recover
 
 
-def bear_rejection(o_swing, high_swing, close_now):
-    if o_swing <= 0 or high_swing <= 0:
+def bear_rejection(ref_price, high_swing, close_now):
+    """
+    Bearish Stop Hunt — đo từ close nến TRƯỚC cửa sổ.
+    
+    ref_price : close của nến ngay trước cửa sổ
+    high_swing: đỉnh cao nhất trong cửa sổ
+    close_now : close nến cuối cửa sổ
+    """
+    if ref_price <= 0 or high_swing <= 0:
         return None
 
-    sweep = (high_swing - o_swing) / o_swing * 100
+    sweep = (high_swing - ref_price) / ref_price * 100
     recover = (high_swing - close_now) / high_swing * 100
 
     if sweep < STOP_HUNT_SWEEP_PCT:
         return None
     if recover < STOP_HUNT_RECOVER_PCT:
         return None
-    if STOP_HUNT_REQUIRE_DIRECTIONAL_CLOSE and close_now >= o_swing:
+    if STOP_HUNT_REQUIRE_DIRECTIONAL_CLOSE and close_now >= ref_price:
         return None
 
     return sweep, recover
@@ -626,12 +644,16 @@ def bear_rejection(o_swing, high_swing, close_now):
 
 def detect_stop_hunt(df, symbol):
     """
-    CHỈ CÓ 1 ĐỊNH NGHĨA DUY NHẤT — không bị đè.
-    Có DEBUG để log coin gần đạt ngưỡng.
+    Phát hiện Stop Hunt — đo từ CLOSE NẾN TRƯỚC cửa sổ.
+    
+    Với mỗi độ dài cửa sổ (1, 2, 3 nến):
+      - ref_price = close của nến NGAY TRƯỚC cửa sổ
+      - Kiểm tra sweep/recover từ ref_price
     """
     confirmed = df[df["confirm"].astype(str) == "1"].copy()
 
-    if len(confirmed) < STOP_HUNT_VOLUME_LOOKBACK + 2:
+    # Cần ít nhất lookback + 1 nến trước để lấy ref_price
+    if len(confirmed) < STOP_HUNT_VOLUME_LOOKBACK + 3:
         return None
 
     last_bar = confirmed.iloc[-1]
@@ -651,51 +673,67 @@ def detect_stop_hunt(df, symbol):
         if STOP_HUNT_MULTIBAR_ENABLED
         else 1
     )
-    max_bars = min(max_bars, len(confirmed))
+    # Cần ít nhất 1 nến trước + bars nến trong cửa sổ
+    max_bars = min(max_bars, len(confirmed) - 1)
 
     # ============== DEBUG ==============
     if STOP_HUNT_DEBUG:
         best = None
         for bars in range(1, max_bars + 1):
-            window = confirmed.iloc[-bars:]
-            first = window.iloc[0]
-            last = window.iloc[-1]
+            # Nến NGAY TRƯỚC cửa sổ
+            ref_idx = len(confirmed) - bars - 1
+            if ref_idx < 0:
+                continue
+            ref_price = float(confirmed.iloc[ref_idx]["close"])
 
-            o = float(first["open"])
+            window = confirmed.iloc[-bars:]
+            last = window.iloc[-1]
             c = float(last["close"])
             low = float(window["low"].min())
             high = float(window["high"].max())
 
-            sweep_bull = (o - low) / o * 100
+            sweep_bull = (ref_price - low) / ref_price * 100
             recover_bull = (c - low) / low * 100
-            sweep_bear = (high - o) / o * 100
+            sweep_bear = (high - ref_price) / ref_price * 100
             recover_bear = (high - c) / high * 100
 
             max_sweep = max(sweep_bull, sweep_bear)
             if best is None or max_sweep > best[0]:
-                best = (max_sweep, bars, sweep_bull, recover_bull, sweep_bear, recover_bear, c > o, c < o)
+                best = (
+                    max_sweep, bars,
+                    sweep_bull, recover_bull,
+                    sweep_bear, recover_bear,
+                    c > ref_price, c < ref_price,
+                    ref_price,
+                )
 
         if best and best[0] >= STOP_HUNT_DEBUG_THRESHOLD:
-            (max_sweep, bars, sb, rb, sbe, rbe, up, down) = best
+            (max_sweep, bars,
+             sb, rb, sbe, rbe,
+             up, down, ref) = best
             print(
-                f"   🔍 {symbol} bars={bars} max_sweep={max_sweep:.2f}% | "
-                f"BULL sweep={sb:.2f}% rec={rb:.2f}% close>open={up} | "
-                f"BEAR sweep={sbe:.2f}% rec={rbe:.2f}% close<open={down}"
+                f"   🔍 {symbol} bars={bars} ref={ref:.4f} max_sweep={max_sweep:.2f}% | "
+                f"BULL sweep={sb:.2f}% rec={rb:.2f}% close>ref={up} | "
+                f"BEAR sweep={sbe:.2f}% rec={rbe:.2f}% close<ref={down}"
             )
     # ===================================
 
     for bars in range(1, max_bars + 1):
+        # Nến NGAY TRƯỚC cửa sổ — dùng close làm reference
+        ref_idx = len(confirmed) - bars - 1
+        if ref_idx < 0:
+            continue
+        ref_price = float(confirmed.iloc[ref_idx]["close"])
+
         window = confirmed.iloc[-bars:]
-        first = window.iloc[0]
         last = window.iloc[-1]
 
-        o = float(first["open"])
         c = float(last["close"])
         low = float(window["low"].min())
         high = float(window["high"].max())
         ts = last["timestamp"]
 
-        bull = bull_rejection(o, low, c)
+        bull = bull_rejection(ref_price, low, c)
         if bull:
             sweep, recover = bull
             return {
@@ -703,6 +741,7 @@ def detect_stop_hunt(df, symbol):
                 "signal": "BULL_STOP_HUNT",
                 "side": "LONG",
                 "price": c,
+                "ref_price": ref_price,
                 "sweep_pct": sweep,
                 "recover_pct": recover,
                 "volume": volume,
@@ -710,7 +749,7 @@ def detect_stop_hunt(df, symbol):
                 "bars": bars,
             }
 
-        bear = bear_rejection(o, high, c)
+        bear = bear_rejection(ref_price, high, c)
         if bear:
             sweep, recover = bear
             return {
@@ -718,6 +757,7 @@ def detect_stop_hunt(df, symbol):
                 "signal": "BEAR_STOP_HUNT",
                 "side": "SHORT",
                 "price": c,
+                "ref_price": ref_price,
                 "sweep_pct": sweep,
                 "recover_pct": recover,
                 "volume": volume,
@@ -726,7 +766,6 @@ def detect_stop_hunt(df, symbol):
             }
 
     return None
-
 
 # ============================================================
 # SCANNERS
