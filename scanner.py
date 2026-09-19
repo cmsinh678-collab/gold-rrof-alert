@@ -636,21 +636,38 @@ def detect_stop_hunt(df, symbol):
     last_bar = confirmed.iloc[-1]
     volume = float(last_bar["volume"])
 
-    if STOP_HUNT_VOLUME_MULT > 0:
-        avg_vol = confirmed["volume"].iloc[
-            -(STOP_HUNT_VOLUME_LOOKBACK + 1):-1
-        ].mean()
-
-        if pd.notna(avg_vol) and avg_vol > 0:
-            if volume < avg_vol * STOP_HUNT_VOLUME_MULT:
-                return None
-
     max_bars = (
         STOP_HUNT_MAX_LOOKBACK_BARS
         if STOP_HUNT_MULTIBAR_ENABLED
         else 1
     )
     max_bars = min(max_bars, len(confirmed))
+
+    # ============ DEBUG: log mọi coin có sweep >= 0.3% ============
+    for bars in range(1, max_bars + 1):
+        window = confirmed.iloc[-bars:]
+        first = window.iloc[0]
+        last = window.iloc[-1]
+
+        o = float(first["open"])
+        c = float(last["close"])
+        low = float(window["low"].min())
+        high = float(window["high"].max())
+
+        sweep_bull = (o - low) / o * 100
+        recover_bull = (c - low) / low * 100
+        sweep_bear = (high - o) / o * 100
+        recover_bear = (high - c) / high * 100
+
+        if sweep_bull >= 0.3 or sweep_bear >= 0.3:
+            print(
+                f"   DEBUG {symbol} bars={bars} | "
+                f"BULL sweep={sweep_bull:.2f}% rec={recover_bull:.2f}% "
+                f"close>open={c > o} | "
+                f"BEAR sweep={sweep_bear:.2f}% rec={recover_bear:.2f}% "
+                f"close<open={c < o}"
+            )
+    # ===============================================================
 
     for bars in range(1, max_bars + 1):
         window = confirmed.iloc[-bars:]
@@ -694,8 +711,6 @@ def detect_stop_hunt(df, symbol):
             }
 
     return None
-
-
 # ============================================================
 # SCANNERS
 # ============================================================
