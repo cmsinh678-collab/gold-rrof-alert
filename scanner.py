@@ -11,7 +11,7 @@ import concurrent.futures
 # ============================================================
 # CONFIG
 # ============================================================
-
+QUIET_TOP_MOVERS = True    
 # Danh sách symbol thủ công — CHỈ chạy RROF
 MANUAL_SYMBOLS = ["XAU-USDT", "ETH-USDT"]
 
@@ -21,12 +21,23 @@ CANDLE_LIMIT = 200
 # Thời gian chờ giữa các vòng lặp (giây)
 LOOP_INTERVAL = 900   # 15 phút
 
+STOP_HUNT_MAX_WORKERS = 10   # số thread song song khi quét Stop Hunt
 # OKX API
 OKX_BASE_URL = "https://www.okx.com"
 OKX_CANDLES_URL = f"{OKX_BASE_URL}/api/v5/market/history-candles"
 OKX_INSTRUMENTS_URL = f"{OKX_BASE_URL}/api/v5/public/instruments"
 OKX_TICKERS_URL = f"{OKX_BASE_URL}/api/v5/market/tickers"
 
+
+
+import time as _time
+t0 = _time.time()
+rrof_results = scan_manual_rrof()
+print(f"⏱ Phần 1 (XAU/ETH): {_time.time()-t0:.1f}s")
+
+t1 = _time.time()
+stop_hunt_results = scan_top_movers_stophunt()
+print(f"⏱ Phần 2 (top movers): {_time.time()-t1:.1f}s")
 # ============================================================
 # EVEREX / RROF SETTINGS  (dùng cho XAU/ETH)
 # ============================================================
@@ -330,18 +341,18 @@ def get_top_movers(force_refresh=False):
 # GET OKX CANDLES
 # ============================================================
 
-def get_okx_candles(symbol, inst_type="SPOT"):
-    print()
-    print("=" * 70)
-    print(f"📥 OKX {symbol} ({inst_type})")
-    print("=" * 70)
+def get_okx_candles(symbol, inst_type="SPOT", quiet=False):
+    if not quiet:
+        print()
+        print("=" * 70)
+        print(f"📥 OKX {symbol} ({inst_type})")
+        print("=" * 70)
 
     params = {
         "instId": symbol,
         "bar": TIMEFRAME,
         "limit": str(CANDLE_LIMIT)
     }
-
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
@@ -353,13 +364,13 @@ def get_okx_candles(symbol, inst_type="SPOT"):
         raise Exception(f"OKX connection error: {e}")
 
     if response.status_code != 200:
-        print(response.text)
+        if not quiet:
+            print(response.text)
         raise Exception(f"OKX HTTP error {response.status_code}")
 
     try:
         data = response.json()
     except Exception:
-        print(response.text)
         raise Exception("OKX trả về dữ liệu không phải JSON")
 
     if data.get("code") != "0":
@@ -374,14 +385,9 @@ def get_okx_candles(symbol, inst_type="SPOT"):
         if len(candle) < 9:
             continue
         rows.append({
-            "timestamp": candle[0],
-            "open": candle[1],
-            "high": candle[2],
-            "low": candle[3],
-            "close": candle[4],
-            "volume": candle[5],
-            "volume_currency": candle[6],
-            "volume_quote": candle[7],
+            "timestamp": candle[0], "open": candle[1], "high": candle[2],
+            "low": candle[3], "close": candle[4], "volume": candle[5],
+            "volume_currency": candle[6], "volume_quote": candle[7],
             "confirm": candle[8]
         })
 
@@ -389,22 +395,17 @@ def get_okx_candles(symbol, inst_type="SPOT"):
         raise Exception("Không parse được dữ liệu OKX")
 
     df = pd.DataFrame(rows)
-
-    numeric_columns = ["open", "high", "low", "close", "volume", "volume_currency", "volume_quote"]
-    for column in numeric_columns:
+    for column in ["open","high","low","close","volume","volume_currency","volume_quote"]:
         df[column] = pd.to_numeric(df[column], errors="coerce")
 
     df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"], errors="coerce"), unit="ms", utc=True)
+    df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
+    df = df.dropna(subset=["timestamp","open","high","low","close","volume"])
 
-    df = df.sort_values("timestamp")
-    df = df.drop_duplicates(subset=["timestamp"])
-    df = df.reset_index(drop=True)
-
-    df = df.dropna(subset=["timestamp", "open", "high", "low", "close", "volume"])
-
-    print(f"✅ Lấy thành công {len(df)} candles")
-    print(f"💰 Last price: {df.iloc[-1]['close']:.2f}")
-    print(f"🕯 Nến cuối confirm: {df.iloc[-1]['confirm']} (0=đang mở, 1=đã đóng)")
+    if not quiet:
+        print(f"✅ Lấy thành công {len(df)} candles")
+        print(f"💰 Last price: {df.iloc[-1]['close']:.2f}")
+        print(f"🕯 Nến cuối confirm: {df.iloc[-1]['confirm']}")
 
     return df
 
@@ -846,9 +847,22 @@ def scan_manual_rrof():
 # SCAN TOP MOVERS — CHỈ STOP HUNT
 # ============================================================
 
+def _scan_one_stophunt(inst_id):
+    """Quét 1 coin — dùng cho thread pool."""
+    inst_type = "SWAP" if inst_id.endswith("-SWAP") else "SPOT"
+    try:
+        df = get_okx_candles(inst_id, inst_type, quiet=True)
+        if df is None:
+            return None
+        return detect_stop_hunt(df, inst_id, quiet=True)
+    except Exception as e:
+        print(f"❌ {inst_id}: {e}")
+        return None
+
+
 def scan_top_movers_stophunt():
     print(f"\n{'#'*70}")
-    print(f"# PHẦN 2: QUÉT TOP MOVERS — CHỈ STOP HUNT")
+    print(f"# PHẦN 2: QUÉT TOP MOVERS — CHỈ STOP HUNT (song song)")
     print(f"{'#'*70}")
 
     gainers, losers, top_symbols = get_top_movers()
@@ -857,32 +871,20 @@ def scan_top_movers_stophunt():
         print("❌ Không có symbol top movers nào")
         return []
 
+    print(f"\n⚡ Quét song song {len(top_symbols)} coin với "
+          f"{STOP_HUNT_MAX_WORKERS} thread...")
+
     results = []
-
-    for inst_id in top_symbols:
-        print(f"\n{'='*70}")
-        print(f"🔍 Đang quét Stop Hunt: {inst_id}")
-        print('='*70)
-
-        inst_type = "SWAP" if inst_id.endswith("-SWAP") else "SPOT"
-
-        try:
-            df = get_okx_candles(inst_id, inst_type)
-        except Exception as e:
-            print(f"❌ DATA ERROR for {inst_id}: {e}")
-            continue
-
-        if df is None:
-            continue
-
-        try:
-            sh_result = detect_stop_hunt(df, inst_id)
-            results.append(sh_result)
-        except Exception as e:
-            print(f"❌ STOP HUNT ERROR for {inst_id}: {e}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=STOP_HUNT_MAX_WORKERS) as executor:
+        futures = {executor.submit(_scan_one_stophunt, sym): sym for sym in top_symbols}
+        for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
+            r = fut.result()
+            if r is not None:
+                results.append(r)
+            if i % 20 == 0:
+                print(f"   ... {i}/{len(top_symbols)}")
 
     return results
-
 # ============================================================
 # RUN ONCE
 # ============================================================
