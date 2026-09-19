@@ -19,9 +19,6 @@ MANUAL_SYMBOLS = ["XAU-USDT-SWAP", "ETH-USDT-SWAP"]
 TIMEFRAME = "15m"
 CANDLE_LIMIT = 200
 
-# GitHub Actions chạy 1 lần rồi thoát.
-# Không dùng while True ở đây.
-
 # Top movers
 TOP_GAINERS_COUNT = 50
 TOP_LOSERS_COUNT = 50
@@ -29,15 +26,19 @@ MIN_VOLUME_24H_USD = 20_000_000
 TOP_MOVERS_TIMEFRAME = "1H"
 TOP_MOVERS_MAX_WORKERS = 20
 
-# Stop Hunt — NGƯỠNG 10%
-STOP_HUNT_SWEEP_PCT = 1.0       # 10% — sập/vọt từ open
-STOP_HUNT_RECOVER_PCT = 1.0     # 10% — hồi phục từ đáy/đỉnh
+# Stop Hunt — NGƯỠNG
+STOP_HUNT_SWEEP_PCT = 4.0
+STOP_HUNT_RECOVER_PCT = 4.0
 STOP_HUNT_REQUIRE_DIRECTIONAL_CLOSE = True
 STOP_HUNT_VOLUME_MULT = 0.0
 STOP_HUNT_VOLUME_LOOKBACK = 20
 STOP_HUNT_MULTIBAR_ENABLED = True
 STOP_HUNT_MAX_LOOKBACK_BARS = 3
 STOP_HUNT_MAX_WORKERS = 20
+
+# DEBUG — bật để xem coin nào gần đạt
+STOP_HUNT_DEBUG = True
+STOP_HUNT_DEBUG_THRESHOLD = 0.1   # log coin có sweep >= 0.1%
 
 # RROF / Everex
 RROF_LENGTH = 10
@@ -161,7 +162,6 @@ def okx_get(url, params, timeout=REQUEST_TIMEOUT):
 
 
 def resolve_manual_symbols():
-    """Resolve exact requested symbols. Không quét toàn bộ instruments nhiều lần."""
     result = {}
 
     data = okx_get(
@@ -272,8 +272,6 @@ def get_swap_usdt_tickers():
         if last <= 0:
             continue
 
-        # Với SWAP, volCcy24h có thể là số lượng base.
-        # Dùng cả hai nguồn và lấy notional lớn hơn.
         usd_volume = max(vol_ccy_24h * last, vol_24h * last)
 
         if usd_volume < MIN_VOLUME_24H_USD:
@@ -316,7 +314,6 @@ def get_1h_change(item):
             continue
         confirmed.append((c[0], close))
 
-    # OKX trả mới -> cũ. Cần 2 nến đã đóng.
     if len(confirmed) < 2:
         return None
 
@@ -590,7 +587,7 @@ def check_rrof_signal(df, symbol):
 
 
 # ============================================================
-# STOP HUNT
+# STOP HUNT — CHỈ CÓ 1 ĐỊNH NGHĨA DUY NHẤT
 # ============================================================
 
 def bull_rejection(o_swing, low_swing, close_now):
@@ -628,6 +625,10 @@ def bear_rejection(o_swing, high_swing, close_now):
 
 
 def detect_stop_hunt(df, symbol):
+    """
+    CHỈ CÓ 1 ĐỊNH NGHĨA DUY NHẤT — không bị đè.
+    Có DEBUG để log coin gần đạt ngưỡng.
+    """
     confirmed = df[df["confirm"].astype(str) == "1"].copy()
 
     if len(confirmed) < STOP_HUNT_VOLUME_LOOKBACK + 2:
@@ -636,6 +637,15 @@ def detect_stop_hunt(df, symbol):
     last_bar = confirmed.iloc[-1]
     volume = float(last_bar["volume"])
 
+    if STOP_HUNT_VOLUME_MULT > 0:
+        avg_vol = confirmed["volume"].iloc[
+            -(STOP_HUNT_VOLUME_LOOKBACK + 1):-1
+        ].mean()
+
+        if pd.notna(avg_vol) and avg_vol > 0:
+            if volume < avg_vol * STOP_HUNT_VOLUME_MULT:
+                return None
+
     max_bars = (
         STOP_HUNT_MAX_LOOKBACK_BARS
         if STOP_HUNT_MULTIBAR_ENABLED
@@ -643,31 +653,36 @@ def detect_stop_hunt(df, symbol):
     )
     max_bars = min(max_bars, len(confirmed))
 
-    # ============ DEBUG: log mọi coin có sweep >= 0.3% ============
-    for bars in range(1, max_bars + 1):
-        window = confirmed.iloc[-bars:]
-        first = window.iloc[0]
-        last = window.iloc[-1]
+    # ============== DEBUG ==============
+    if STOP_HUNT_DEBUG:
+        best = None
+        for bars in range(1, max_bars + 1):
+            window = confirmed.iloc[-bars:]
+            first = window.iloc[0]
+            last = window.iloc[-1]
 
-        o = float(first["open"])
-        c = float(last["close"])
-        low = float(window["low"].min())
-        high = float(window["high"].max())
+            o = float(first["open"])
+            c = float(last["close"])
+            low = float(window["low"].min())
+            high = float(window["high"].max())
 
-        sweep_bull = (o - low) / o * 100
-        recover_bull = (c - low) / low * 100
-        sweep_bear = (high - o) / o * 100
-        recover_bear = (high - c) / high * 100
+            sweep_bull = (o - low) / o * 100
+            recover_bull = (c - low) / low * 100
+            sweep_bear = (high - o) / o * 100
+            recover_bear = (high - c) / high * 100
 
-        if sweep_bull >= 0.3 or sweep_bear >= 0.3:
+            max_sweep = max(sweep_bull, sweep_bear)
+            if best is None or max_sweep > best[0]:
+                best = (max_sweep, bars, sweep_bull, recover_bull, sweep_bear, recover_bear, c > o, c < o)
+
+        if best and best[0] >= STOP_HUNT_DEBUG_THRESHOLD:
+            (max_sweep, bars, sb, rb, sbe, rbe, up, down) = best
             print(
-                f"   DEBUG {symbol} bars={bars} | "
-                f"BULL sweep={sweep_bull:.2f}% rec={recover_bull:.2f}% "
-                f"close>open={c > o} | "
-                f"BEAR sweep={sweep_bear:.2f}% rec={recover_bear:.2f}% "
-                f"close<open={c < o}"
+                f"   🔍 {symbol} bars={bars} max_sweep={max_sweep:.2f}% | "
+                f"BULL sweep={sb:.2f}% rec={rb:.2f}% close>open={up} | "
+                f"BEAR sweep={sbe:.2f}% rec={rbe:.2f}% close<open={down}"
             )
-    # ===============================================================
+    # ===================================
 
     for bars in range(1, max_bars + 1):
         window = confirmed.iloc[-bars:]
@@ -711,6 +726,8 @@ def detect_stop_hunt(df, symbol):
             }
 
     return None
+
+
 # ============================================================
 # SCANNERS
 # ============================================================
@@ -845,7 +862,6 @@ def build_messages(rrof_results, stop_results):
         r = item["result"]
 
         if item["type"] == "RROF":
-            # Format RROF: long XAU-USDT 2650.30 12.45 15.20
             lines.append(
                 f"{r['signal'].lower()} "
                 f"{r['symbol']} "
@@ -854,7 +870,6 @@ def build_messages(rrof_results, stop_results):
                 f"{r['rrof_s']:.2f}"
             )
         else:
-            # Format Stop Hunt: long XYZUSDT swp=12.34% rcv=13.21%
             side = "long" if r["side"] == "LONG" else "short"
             lines.append(
                 f"{side} {clean_symbol(r['symbol'])} "
@@ -890,6 +905,7 @@ def run_once():
     print(f"Stop Hunt TF : {TIMEFRAME}")
     print(f"Volume min   : ${MIN_VOLUME_24H_USD / 1e6:.1f}M")
     print(f"Stop Hunt    : sweep>={STOP_HUNT_SWEEP_PCT}% recover>={STOP_HUNT_RECOVER_PCT}%")
+    print(f"Debug        : {'ON' if STOP_HUNT_DEBUG else 'OFF'} (ngưỡng log {STOP_HUNT_DEBUG_THRESHOLD}%)")
     print("=" * 70)
 
     rrof_results = []
@@ -919,7 +935,6 @@ def run_once():
         print("\n📨 TELEGRAM:")
         print(message)
 
-        # Chỉ commit state sau khi Telegram thành công.
         if send_telegram(message):
             commit_sent_states(candidates)
             print("✅ Telegram OK + state saved")
