@@ -29,9 +29,9 @@ MIN_VOLUME_24H_USD = 20_000_000
 TOP_MOVERS_TIMEFRAME = "1H"
 TOP_MOVERS_MAX_WORKERS = 20
 
-# Stop Hunt
-STOP_HUNT_SWEEP_PCT = 10     # 0.10%
-STOP_HUNT_RECOVER_PCT = 10     # 0.10%
+# Stop Hunt — NGƯỠNG 10%
+STOP_HUNT_SWEEP_PCT = 10.0       # 10% — sập/vọt từ open
+STOP_HUNT_RECOVER_PCT = 10.0     # 10% — hồi phục từ đáy/đỉnh
 STOP_HUNT_REQUIRE_DIRECTIONAL_CLOSE = True
 STOP_HUNT_VOLUME_MULT = 0.0
 STOP_HUNT_VOLUME_LOOKBACK = 20
@@ -830,18 +830,20 @@ def build_messages(rrof_results, stop_results):
         r = item["result"]
 
         if item["type"] == "RROF":
+            # Format RROF: long XAU-USDT 2650.30 12.45 15.20
             lines.append(
                 f"{r['signal'].lower()} "
-                f"{clean_symbol(r['symbol'])} "
+                f"{r['symbol']} "
                 f"{r['price']:.2f} "
                 f"{r['signal_line']:.2f} "
                 f"{r['rrof_s']:.2f}"
             )
         else:
+            # Format Stop Hunt: long XYZUSDT swp=12.34% rcv=13.21%
             side = "long" if r["side"] == "LONG" else "short"
             lines.append(
                 f"{side} {clean_symbol(r['symbol'])} "
-                f"sweep={r['sweep_pct']:.2f}% "
+                f"swp={r['sweep_pct']:.2f}% "
                 f"rcv={r['recover_pct']:.2f}%"
             )
 
@@ -872,6 +874,7 @@ def run_once():
     print(f"Top movers   : {TOP_GAINERS_COUNT} + {TOP_LOSERS_COUNT}")
     print(f"Stop Hunt TF : {TIMEFRAME}")
     print(f"Volume min   : ${MIN_VOLUME_24H_USD / 1e6:.1f}M")
+    print(f"Stop Hunt    : sweep>={STOP_HUNT_SWEEP_PCT}% recover>={STOP_HUNT_RECOVER_PCT}%")
     print("=" * 70)
 
     rrof_results = []
