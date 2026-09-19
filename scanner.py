@@ -30,8 +30,8 @@ TOP_MOVERS_TIMEFRAME = "1H"
 TOP_MOVERS_MAX_WORKERS = 20
 
 # Stop Hunt — NGƯỠNG 10%
-STOP_HUNT_SWEEP_PCT = 10.0       # 10% — sập/vọt từ open
-STOP_HUNT_RECOVER_PCT = 10.0     # 10% — hồi phục từ đáy/đỉnh
+STOP_HUNT_SWEEP_PCT = 6.0       # 10% — sập/vọt từ open
+STOP_HUNT_RECOVER_PCT = 6.0     # 10% — hồi phục từ đáy/đỉnh
 STOP_HUNT_REQUIRE_DIRECTIONAL_CLOSE = True
 STOP_HUNT_VOLUME_MULT = 0.0
 STOP_HUNT_VOLUME_LOOKBACK = 20
