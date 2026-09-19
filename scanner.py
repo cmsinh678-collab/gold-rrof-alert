@@ -11,7 +11,9 @@ import concurrent.futures
 # ============================================================
 # CONFIG
 # ============================================================
-QUIET_TOP_MOVERS = True    
+
+QUIET_TOP_MOVERS = True
+
 # Danh sách symbol thủ công — CHỈ chạy RROF
 MANUAL_SYMBOLS = ["XAU-USDT", "ETH-USDT"]
 
@@ -21,23 +23,15 @@ CANDLE_LIMIT = 200
 # Thời gian chờ giữa các vòng lặp (giây)
 LOOP_INTERVAL = 900   # 15 phút
 
-STOP_HUNT_MAX_WORKERS = 10   # số thread song song khi quét Stop Hunt
+# Số thread song song khi quét Stop Hunt
+STOP_HUNT_MAX_WORKERS = 10
+
 # OKX API
 OKX_BASE_URL = "https://www.okx.com"
 OKX_CANDLES_URL = f"{OKX_BASE_URL}/api/v5/market/history-candles"
 OKX_INSTRUMENTS_URL = f"{OKX_BASE_URL}/api/v5/public/instruments"
 OKX_TICKERS_URL = f"{OKX_BASE_URL}/api/v5/market/tickers"
 
-
-
-import time as _time
-t0 = _time.time()
-rrof_results = scan_manual_rrof()
-print(f"⏱ Phần 1 (XAU/ETH): {_time.time()-t0:.1f}s")
-
-t1 = _time.time()
-stop_hunt_results = scan_top_movers_stophunt()
-print(f"⏱ Phần 2 (top movers): {_time.time()-t1:.1f}s")
 # ============================================================
 # EVEREX / RROF SETTINGS  (dùng cho XAU/ETH)
 # ============================================================
@@ -54,15 +48,15 @@ LOOKBACK_MA_TYPE = "SMA"
 # STOP HUNT SETTINGS  (dùng cho top movers)
 # ============================================================
 
-STOP_HUNT_SWEEP_PCT = 0.10          # 10% — ngưỡng sập/vọt
-STOP_HUNT_RECOVER_PCT = 0.10        # 10% — ngưỡng hồi phục
+STOP_HUNT_SWEEP_PCT = 0.10
+STOP_HUNT_RECOVER_PCT = 0.10
 STOP_HUNT_REQUIRE_CLOSE_ABOVE_OPEN = True
-STOP_HUNT_VOLUME_MULT = 0.0         # 0 = tắt volume filter
+STOP_HUNT_VOLUME_MULT = 0.0
 STOP_HUNT_VOLUME_LOOKBACK = 20
 
-# Multi-bar Stop Hunt (mới)
-STOP_HUNT_MULTIBAR_ENABLED = True   # True = bắt cả case 2-3 nến
-STOP_HUNT_MAX_LOOKBACK_BARS = 3     # số nến tối đa nhìn lại (1-5)
+# Multi-bar Stop Hunt
+STOP_HUNT_MULTIBAR_ENABLED = True
+STOP_HUNT_MAX_LOOKBACK_BARS = 3
 
 # ============================================================
 # TOP MOVERS SETTINGS
@@ -442,15 +436,7 @@ def normalize(value, average):
     x = value / average
 
     result = np.select(
-        [
-            x > 1.50,
-            x > 1.20,
-            x > 1.00,
-            x > 0.80,
-            x > 0.60,
-            x > 0.40,
-            x > 0.20
-        ],
+        [x > 1.50, x > 1.20, x > 1.00, x > 0.80, x > 0.60, x > 0.40, x > 0.20],
         [1.00, 0.90, 0.80, 0.70, 0.60, 0.50, 0.25],
         default=0.10
     )
@@ -522,17 +508,10 @@ def calculate_everex(df):
     return df
 
 # ============================================================
-# STOP HUNT DETECTION — hỗ trợ cả 1-nến và multi-nến
+# STOP HUNT DETECTION
 # ============================================================
 
 def _check_bull_rejection(o_swing, l_swing, c_now):
-    """
-    Kiểm tra 1 cú sập + hồi phục:
-      - o_swing: giá open lúc bắt đầu (đỉnh tham chiếu)
-      - l_swing: đáy thấp nhất trong cụm nến
-      - c_now:   giá đóng cửa hiện tại (nến mới nhất)
-    Trả về (sweep_pct, recover_pct) nếu thỏa, ngược lại None.
-    """
     if o_swing <= 0 or l_swing <= 0:
         return None
 
@@ -551,12 +530,6 @@ def _check_bull_rejection(o_swing, l_swing, c_now):
 
 
 def _check_bear_rejection(o_swing, h_swing, c_now):
-    """
-    Kiểm tra 1 cú vọt + rơi lại:
-      - o_swing: giá open lúc bắt đầu (đáy tham chiếu)
-      - h_swing: đỉnh cao nhất trong cụm nến
-      - c_now:   giá đóng cửa hiện tại
-    """
     if o_swing <= 0 or h_swing <= 0:
         return None
 
@@ -574,12 +547,9 @@ def _check_bear_rejection(o_swing, h_swing, c_now):
     return sweep_pct, recover_pct
 
 
-def detect_stop_hunt(df, symbol_name):
+def detect_stop_hunt(df, symbol_name, quiet=False):
     """
-    Phát hiện Stop Hunt trên nến ĐÃ ĐÓNG gần nhất.
-    Hỗ trợ 2 pattern:
-      - Pattern 1-nến: sập/vọt + hồi ngay trong 1 nến
-      - Pattern multi-nến: sập/vọt ở nến trước, hồi ở nến sau (tối đa 3 nến)
+    Phát hiện Stop Hunt. Tham số quiet=True để tắt log chi tiết.
     """
     result = {
         'symbol': symbol_name,
@@ -604,21 +574,20 @@ def detect_stop_hunt(df, symbol_name):
     if len(confirmed) < 2:
         return result
 
-    # Volume filter (chỉ áp cho nến cuối)
+    # Volume filter
     last_bar = confirmed.iloc[-1]
     v = float(last_bar['volume'])
     if STOP_HUNT_VOLUME_MULT > 0:
         avg_vol = confirmed['volume'].iloc[-(STOP_HUNT_VOLUME_LOOKBACK + 1):-1].mean()
         if pd.notna(avg_vol) and avg_vol > 0:
             if v < avg_vol * STOP_HUNT_VOLUME_MULT:
-                print(f"🚫 {symbol_name}: volume thấp hơn {STOP_HUNT_VOLUME_MULT}x avg")
+                if not quiet:
+                    print(f"🚫 {symbol_name}: volume thấp hơn {STOP_HUNT_VOLUME_MULT}x avg")
                 return result
 
-    # Số nến tối đa nhìn lại
     max_lookback = STOP_HUNT_MAX_LOOKBACK_BARS if STOP_HUNT_MULTIBAR_ENABLED else 1
     max_lookback = min(max_lookback, len(confirmed))
 
-    # ===== THỬ TỪNG ĐỘ DÀI CỬA SỔ (1 nến, 2 nến, 3 nến) =====
     for bars in range(1, max_lookback + 1):
         window = confirmed.iloc[-bars:]
 
@@ -627,7 +596,6 @@ def detect_stop_hunt(df, symbol_name):
 
         o_swing = float(first['open'])
         c_now = float(last['close'])
-        ts_first = first['timestamp']
         ts_last = last['timestamp']
 
         l_swing = float(window['low'].min())
@@ -687,11 +655,12 @@ def detect_stop_hunt(df, symbol_name):
                 })
                 return result
 
-    print(f"🚫 {symbol_name}: Không có Stop Hunt")
+    if not quiet:
+        print(f"🚫 {symbol_name}: Không có Stop Hunt")
     return result
 
 # ============================================================
-# SIGNAL CHECK - RROF CROSSOVER (chỉ dùng cho XAU/ETH)
+# SIGNAL CHECK - RROF CROSSOVER
 # ============================================================
 
 def check_signal(df, symbol_name):
@@ -762,35 +731,21 @@ def check_signal(df, symbol_name):
 # ============================================================
 
 def _clean_symbol(inst_id):
-    """
-    Chuyển 'XYZ-USDT-SWAP' → 'XYZUSDT'
-    Chuyển 'XYZ-USDT' → 'XYZUSDT'
-    """
-    # Bỏ hậu tố -SWAP
     s = inst_id
     if s.endswith("-SWAP"):
         s = s[:-5]
-    # Bỏ dấu gạch ngang
     s = s.replace("-", "")
     return s
 
 
 def build_message(rrof_results, stop_hunt_results):
-    """
-    Format:
-      long XAU-USDT 2650.30 12.45 15.20        ← RROF
-      long XYZUSDT sweep=12.34% rcv=13.21%     ← Bull Stop Hunt
-      short DEFUSDT sweep=11.50% rcv=12.30%    ← Bear Stop Hunt
-    """
     lines = []
 
-    # --- RROF signals (XAU/ETH) - giữ nguyên format gốc ---
     rrof_signals = [r for r in rrof_results if r.get('signal') is not None]
     for s in rrof_signals:
         line = f"{s['signal'].lower()} {s['symbol']} {s['price']:.2f} {s['signal_line']:.2f} {s['rrof']:.2f}"
         lines.append(line)
 
-    # --- Stop Hunt signals (top movers) ---
     sh_signals = [r for r in stop_hunt_results if r.get('signal') is not None]
     for s in sh_signals:
         side = "long" if s['side'] == "LONG" else "short"
@@ -801,6 +756,7 @@ def build_message(rrof_results, stop_hunt_results):
     if not lines:
         return None
     return "\n".join(lines)
+
 # ============================================================
 # SCAN XAU/ETH — CHỈ RROF
 # ============================================================
@@ -848,13 +804,12 @@ def scan_manual_rrof():
 # ============================================================
 
 def _scan_one_stophunt(inst_id):
-    """Quét 1 coin — dùng cho thread pool."""
     inst_type = "SWAP" if inst_id.endswith("-SWAP") else "SPOT"
     try:
-        df = get_okx_candles(inst_id, inst_type, quiet=True)
+        df = get_okx_candles(inst_id, inst_type, quiet=QUIET_TOP_MOVERS)
         if df is None:
             return None
-        return detect_stop_hunt(df, inst_id, quiet=True)
+        return detect_stop_hunt(df, inst_id, quiet=QUIET_TOP_MOVERS)
     except Exception as e:
         print(f"❌ {inst_id}: {e}")
         return None
@@ -885,6 +840,7 @@ def scan_top_movers_stophunt():
                 print(f"   ... {i}/{len(top_symbols)}")
 
     return results
+
 # ============================================================
 # RUN ONCE
 # ============================================================
@@ -906,10 +862,14 @@ def run_once():
     print("=" * 70)
 
     # PHẦN 1: XAU/ETH → RROF
+    t0 = time.time()
     rrof_results = scan_manual_rrof()
+    print(f"\n⏱ PHẦN 1 (XAU/ETH): {time.time()-t0:.1f}s")
 
     # PHẦN 2: TOP MOVERS → STOP HUNT
+    t1 = time.time()
     stop_hunt_results = scan_top_movers_stophunt()
+    print(f"\n⏱ PHẦN 2 (top movers): {time.time()-t1:.1f}s")
 
     # Tổng kết
     rrof_sig_count = len([r for r in rrof_results if r.get('signal')])
