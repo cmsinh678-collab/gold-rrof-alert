@@ -7,6 +7,7 @@ import numpy as np
 from datetime import datetime
 import json
 import concurrent.futures
+import threading
 
 # ============================================================
 # CONFIG
@@ -15,7 +16,7 @@ import concurrent.futures
 QUIET_TOP_MOVERS = True
 
 # Danh sách symbol thủ công — CHỈ chạy RROF
-MANUAL_SYMBOLS = ["XAU-USDT", "ETH-USDT"]
+MANUAL_SYMBOLS = ["XAU-USDT-SWAP", "ETH-USDT-SWAP"]
 
 TIMEFRAME = "15m"
 CANDLE_LIMIT = 200
@@ -28,7 +29,7 @@ STOP_HUNT_MAX_WORKERS = 10
 
 # OKX API
 OKX_BASE_URL = "https://www.okx.com"
-OKX_CANDLES_URL = f"{OKX_BASE_URL}/api/v5/market/history-candles"
+OKX_CANDLES_URL = f"{OKX_BASE_URL}/api/v5/market/candles"
 OKX_INSTRUMENTS_URL = f"{OKX_BASE_URL}/api/v5/public/instruments"
 OKX_TICKERS_URL = f"{OKX_BASE_URL}/api/v5/market/tickers"
 
@@ -48,9 +49,9 @@ LOOKBACK_MA_TYPE = "SMA"
 # STOP HUNT SETTINGS  (dùng cho top movers)
 # ============================================================
 
-STOP_HUNT_SWEEP_PCT = 0.10
-STOP_HUNT_RECOVER_PCT = 0.10
-STOP_HUNT_REQUIRE_CLOSE_ABOVE_OPEN = True
+STOP_HUNT_SWEEP_PCT = 10  # 0.10%
+STOP_HUNT_RECOVER_PCT = 10 # 0.10%
+STOP_HUNT_REQUIRE_DIRECTIONAL_CLOSE = True
 STOP_HUNT_VOLUME_MULT = 0.0
 STOP_HUNT_VOLUME_LOOKBACK = 20
 
@@ -79,34 +80,41 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 STATE_FILE = "signal_state.json"
+STATE_LOCK = threading.Lock()
 
 # ============================================================
 # STATE MANAGEMENT
 # ============================================================
 
 def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"⚠️ Không đọc được state: {e}")
+        return {}
 
 def save_state(state):
-    with open(STATE_FILE, 'w') as f:
-        json.dump(state, f)
+    tmp_file = STATE_FILE + ".tmp"
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, separators=(",", ":"))
+    os.replace(tmp_file, STATE_FILE)
 
 def is_signal_reported(symbol, signal_type, timestamp):
-    state = load_state()
     key = f"{symbol}_{signal_type}_{timestamp}"
-    return state.get(key, False)
+    with STATE_LOCK:
+        state = load_state()
+        return bool(state.get(key, False))
 
 def mark_signal_reported(symbol, signal_type, timestamp):
-    state = load_state()
     key = f"{symbol}_{signal_type}_{timestamp}"
-    state[key] = True
-    save_state(state)
+    with STATE_LOCK:
+        state = load_state()
+        state[key] = True
+        save_state(state)
 
 # ============================================================
 # TELEGRAM FUNCTIONS
@@ -138,34 +146,53 @@ def send_telegram(message):
 # ============================================================
 
 def find_symbol(search_term):
+    """
+    Tìm instrument trên OKX.
+    - Ưu tiên SWAP nếu người dùng nhập BASE-USDT.
+    - Nếu đã nhập đầy đủ -SWAP thì tìm chính xác.
+    - Không dùng substring tùy tiện để tránh bắt nhầm symbol.
+    """
+    term = search_term.strip().upper()
+
+    if term.endswith("-SWAP"):
+        preferred = [term]
+    elif term.endswith("-USDT"):
+        preferred = [f"{term}-SWAP", term]
+    else:
+        preferred = [f"{term}-USDT-SWAP", f"{term}-USDT"]
+
     print()
     print(f"🔍 Đang tìm {search_term} trên OKX...")
 
-    inst_types = ["SWAP", "SPOT"]
-
-    for inst_type in inst_types:
+    for inst_type, wanted_ids in [("SWAP", preferred), ("SPOT", preferred)]:
         try:
             params = {"instType": inst_type}
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-            response = requests.get(OKX_INSTRUMENTS_URL, params=params, headers=headers, timeout=15)
-            if response.status_code != 200:
-                continue
+            headers = {
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json",
+            }
+            response = requests.get(
+                OKX_INSTRUMENTS_URL,
+                params=params,
+                headers=headers,
+                timeout=15,
+            )
+            response.raise_for_status()
 
             data = response.json()
-            if data.get('code') != '0':
+            if data.get("code") != "0":
                 continue
 
-            for inst in data['data']:
-                inst_id = inst.get('instId', '')
-                if search_term in inst_id:
-                    print(f"✅ Tìm thấy {inst_type}: {inst_id}")
-                    return inst_id, inst_type
-        except Exception as e:
-            print(f"⚠️ Lỗi khi kiểm tra {inst_type}: {e}")
-            continue
+            available = {inst.get("instId", "") for inst in data.get("data", [])}
+            for wanted in wanted_ids:
+                if wanted in available:
+                    print(f"✅ Tìm thấy {inst_type}: {wanted}")
+                    return wanted, inst_type
 
-    print(f"❌ Không tìm thấy {search_term} trên OKX")
+        except (requests.RequestException, ValueError) as e:
+            print(f"⚠️ Lỗi khi kiểm tra {inst_type}: {e}")
+
+    print(f"❌ Không tìm thấy instrument chính xác cho {search_term}")
     return None, None
 
 # ============================================================
@@ -209,31 +236,48 @@ def _fetch_okx_tickers(inst_type):
 
 
 def _get_change_pct_1h(inst_id, tf="1H"):
-    params = {"instId": inst_id, "bar": tf, "limit": "2"}
+    """
+    Tính % thay đổi của NẾN 1H ĐÃ ĐÓNG gần nhất so với nến 1H
+    ngay trước nó. Không dùng nến đang chạy.
+    """
+    params = {"instId": inst_id, "bar": tf, "limit": "3"}
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json"
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
     }
+
     try:
-        r = requests.get(OKX_CANDLES_URL, params=params, headers=headers, timeout=10)
-        if r.status_code != 200:
-            return inst_id, None
+        r = requests.get(
+            OKX_CANDLES_URL,
+            params=params,
+            headers=headers,
+            timeout=10,
+        )
+        r.raise_for_status()
         data = r.json()
         if data.get("code") != "0":
             return inst_id, None
+
         candles = data.get("data", [])
-        if len(candles) < 2:
+        confirmed = [c for c in candles if len(c) >= 9 and str(c[8]) == "1"]
+
+        if len(confirmed) < 2:
             return inst_id, None
 
-        last_close = float(candles[0][4])
-        prev_close = float(candles[1][4])
+        # OKX thường trả mới -> cũ; sắp xếp lại để chắc chắn.
+        confirmed.sort(key=lambda c: int(c[0]))
+
+        prev_close = float(confirmed[-2][4])
+        last_close = float(confirmed[-1][4])
+
         if prev_close <= 0:
             return inst_id, None
+
         pct = (last_close - prev_close) / prev_close * 100
         return inst_id, pct
-    except Exception:
-        return inst_id, None
 
+    except (requests.RequestException, ValueError, TypeError, IndexError):
+        return inst_id, None
 
 def get_top_movers(force_refresh=False):
     global _top_movers_cache
@@ -267,7 +311,14 @@ def get_top_movers(force_refresh=False):
             vol_24h = float(t.get("vol24h") or 0)
         except (TypeError, ValueError):
             continue
-        usd_volume = max(vol_ccy_24h, vol_24h * last)
+
+        # Với SWAP/FUTURES trên OKX, volCcy24h là volume theo BASE.
+        # Quy đổi xấp xỉ notional USDT bằng BASE volume * last price.
+        # (Với SPOT, volCcy24h lại là quote volume.)
+        if AUTO_SCAN_INST_TYPE in ("SWAP", "FUTURES"):
+            usd_volume = vol_ccy_24h * last
+        else:
+            usd_volume = vol_ccy_24h if vol_ccy_24h > 0 else vol_24h * last
         if usd_volume < MIN_VOLUME_24H_USD:
             continue
         candidates.append(inst_id)
@@ -396,6 +447,9 @@ def get_okx_candles(symbol, inst_type="SPOT", quiet=False):
     df = df.sort_values("timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
     df = df.dropna(subset=["timestamp","open","high","low","close","volume"])
 
+    if len(df) < 50:
+        raise Exception(f"Chỉ có {len(df)} candles hợp lệ, không đủ cho RROF/Stop Hunt")
+
     if not quiet:
         print(f"✅ Lấy thành công {len(df)} candles")
         print(f"💰 Last price: {df.iloc[-1]['close']:.2f}")
@@ -518,12 +572,12 @@ def _check_bull_rejection(o_swing, l_swing, c_now):
     sweep_pct = (o_swing - l_swing) / o_swing * 100
     recover_pct = (c_now - l_swing) / l_swing * 100
 
-    if sweep_pct < STOP_HUNT_SWEEP_PCT * 100:
+    if sweep_pct < STOP_HUNT_SWEEP_PCT:
         return None
-    if recover_pct < STOP_HUNT_RECOVER_PCT * 100:
+    if recover_pct < STOP_HUNT_RECOVER_PCT:
         return None
 
-    if STOP_HUNT_REQUIRE_CLOSE_ABOVE_OPEN and c_now <= o_swing:
+    if STOP_HUNT_REQUIRE_DIRECTIONAL_CLOSE and c_now <= o_swing:
         return None
 
     return sweep_pct, recover_pct
@@ -536,12 +590,12 @@ def _check_bear_rejection(o_swing, h_swing, c_now):
     sweep_pct = (h_swing - o_swing) / o_swing * 100
     recover_pct = (h_swing - c_now) / h_swing * 100
 
-    if sweep_pct < STOP_HUNT_SWEEP_PCT * 100:
+    if sweep_pct < STOP_HUNT_SWEEP_PCT:
         return None
-    if recover_pct < STOP_HUNT_RECOVER_PCT * 100:
+    if recover_pct < STOP_HUNT_RECOVER_PCT:
         return None
 
-    if STOP_HUNT_REQUIRE_CLOSE_ABOVE_OPEN and c_now >= o_swing:
+    if STOP_HUNT_REQUIRE_DIRECTIONAL_CLOSE and c_now >= o_swing:
         return None
 
     return sweep_pct, recover_pct
@@ -565,6 +619,7 @@ def detect_stop_hunt(df, symbol_name, quiet=False):
         'volume': None,
         'timestamp': None,
         'bars': None,
+        'state_key': None,
     }
 
     if len(df) < STOP_HUNT_VOLUME_LOOKBACK + 2:
@@ -611,7 +666,6 @@ def detect_stop_hunt(df, symbol_name, quiet=False):
             if not is_signal_reported(symbol_name, key_type, ts_key):
                 print(f"🟢 {symbol_name}: BULLISH STOP HUNT ({bars} nến) | "
                       f"sập {sweep_pct:.2f}% | hồi {recover_pct:.2f}%")
-                mark_signal_reported(symbol_name, key_type, ts_key)
                 result.update({
                     'signal': 'BULL_STOP_HUNT',
                     'side': 'LONG',
@@ -625,6 +679,7 @@ def detect_stop_hunt(df, symbol_name, quiet=False):
                     'volume': v,
                     'timestamp': ts_last,
                     'bars': bars,
+                    'state_key': (symbol_name, key_type, ts_key),
                 })
                 return result
 
@@ -638,7 +693,6 @@ def detect_stop_hunt(df, symbol_name, quiet=False):
             if not is_signal_reported(symbol_name, key_type, ts_key):
                 print(f"🔴 {symbol_name}: BEARISH STOP HUNT ({bars} nến) | "
                       f"vọt {sweep_pct:.2f}% | rơi {recover_pct:.2f}%")
-                mark_signal_reported(symbol_name, key_type, ts_key)
                 result.update({
                     'signal': 'BEAR_STOP_HUNT',
                     'side': 'SHORT',
@@ -652,6 +706,7 @@ def detect_stop_hunt(df, symbol_name, quiet=False):
                     'volume': v,
                     'timestamp': ts_last,
                     'bars': bars,
+                    'state_key': (symbol_name, key_type, ts_key),
                 })
                 return result
 
@@ -688,6 +743,10 @@ def check_signal(df, symbol_name):
     td1 = confirmed.iloc[-1]
     td2 = confirmed.iloc[-2]
 
+    if pd.isna(td2["RROF_S"]) or pd.isna(td2["SIGNAL"]) or pd.isna(td1["RROF_S"]) or pd.isna(td1["SIGNAL"]):
+        print(f"⚠️ {symbol_name}: RROF/SIGNAL chưa đủ dữ liệu")
+        return result
+
     print(f"📊 TD2 (nến -2): {td2['timestamp']} | RROF_S={td2['RROF_S']:.2f}, SIGNAL={td2['SIGNAL']:.2f}")
     print(f"📊 TD1 (nến -1): {td1['timestamp']} | RROF_S={td1['RROF_S']:.2f}, SIGNAL={td1['SIGNAL']:.2f}")
 
@@ -696,7 +755,7 @@ def check_signal(df, symbol_name):
 
     result['price'] = float(td1['close'])
     result['timestamp'] = td1['timestamp']
-    result['rrof'] = float(td1['RROF'])
+    result['rrof'] = float(td1['RROF_S'])
     result['signal_line'] = float(td1['SIGNAL'])
     result['volume'] = float(td1['volume'])
     result['signal_timestamp'] = td1['timestamp']
@@ -705,8 +764,8 @@ def check_signal(df, symbol_name):
         timestamp_key = td1['timestamp'].strftime('%Y%m%d%H%M')
         if not is_signal_reported(symbol_name, 'LONG', timestamp_key):
             print(f"🟢 {symbol_name}: CẮT LÊN (LONG) tại nến TD1 {td1['timestamp']}")
-            result['signal'] = 'LOG'
-            mark_signal_reported(symbol_name, 'LONG', timestamp_key)
+            result['signal'] = 'LONG'
+            result['state_key'] = (symbol_name, 'LONG', timestamp_key)
             return result
         else:
             print(f"ℹ️ {symbol_name}: Tín hiệu LONG đã báo trước đó")
@@ -716,8 +775,8 @@ def check_signal(df, symbol_name):
         timestamp_key = td1['timestamp'].strftime('%Y%m%d%H%M')
         if not is_signal_reported(symbol_name, 'SHORT', timestamp_key):
             print(f"🔴 {symbol_name}: CẮT XUỐNG (SHORT) tại nến TD1 {td1['timestamp']}")
-            result['signal'] = 'SHO'
-            mark_signal_reported(symbol_name, 'SHORT', timestamp_key)
+            result['signal'] = 'SHORT'
+            result['state_key'] = (symbol_name, 'SHORT', timestamp_key)
             return result
         else:
             print(f"ℹ️ {symbol_name}: Tín hiệu SHORT đã báo trước đó")
@@ -743,7 +802,11 @@ def build_message(rrof_results, stop_hunt_results):
 
     rrof_signals = [r for r in rrof_results if r.get('signal') is not None]
     for s in rrof_signals:
-        line = f"{s['signal'].lower()} {s['symbol']} {s['price']:.2f} {s['signal_line']:.2f} {s['rrof']:.2f}"
+        line = (
+            f"{s['signal'].lower()} {s['symbol']} "
+            f"price={s['price']:.2f} "
+            f"rrof_s={s['rrof']:.2f} signal={s['signal_line']:.2f}"
+        )
         lines.append(line)
 
     sh_signals = [r for r in stop_hunt_results if r.get('signal') is not None]
@@ -841,6 +904,14 @@ def scan_top_movers_stophunt():
 
     return results
 
+def mark_sent_signals(rrof_results, stop_hunt_results):
+    """Chỉ ghi state sau khi Telegram gửi thành công."""
+    for item in list(rrof_results) + list(stop_hunt_results):
+        key = item.get("state_key")
+        if key:
+            mark_signal_reported(*key)
+
+
 # ============================================================
 # RUN ONCE
 # ============================================================
@@ -848,15 +919,15 @@ def scan_top_movers_stophunt():
 def run_once():
     print()
     print("=" * 70)
-    print(f"🚀 SCAN START — {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print(f"🚀 SCAN START — {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')}")
     print("=" * 70)
     print(f"Timeframe       : {TIMEFRAME}")
     print(f"XAU/ETH logic   : RROF only  ({MANUAL_SYMBOLS})")
     print(f"Top movers logic: Stop Hunt only "
           f"({TOP_GAINERS_COUNT} gainers + {TOP_LOSERS_COUNT} losers {TOP_MOVERS_TIMEFRAME})")
     print(f"Volume min      : ${MIN_VOLUME_24H_USD/1e6:.1f}M (24h)")
-    print(f"Stop Hunt params: sweep≥{STOP_HUNT_SWEEP_PCT*100:.1f}%, "
-          f"recover≥{STOP_HUNT_RECOVER_PCT*100:.1f}%")
+    print(f"Stop Hunt params: sweep≥{STOP_HUNT_SWEEP_PCT:.2f}%, "
+          f"recover≥{STOP_HUNT_RECOVER_PCT:.2f}%")
     print(f"Multi-bar       : {'ON' if STOP_HUNT_MULTIBAR_ENABLED else 'OFF'} "
           f"(max {STOP_HUNT_MAX_LOOKBACK_BARS} nến)")
     print("=" * 70)
@@ -886,7 +957,11 @@ def run_once():
 
     if message:
         print("\n📨 Sending Telegram...")
-        send_telegram(message)
+        sent = send_telegram(message)
+        if sent:
+            mark_sent_signals(rrof_results, stop_hunt_results)
+        else:
+            print("⚠️ Telegram gửi thất bại → không ghi state, vòng sau sẽ thử lại.")
     else:
         print("\nℹ️ Không có tín hiệu mới. Không gửi Telegram.")
 
