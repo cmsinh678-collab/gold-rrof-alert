@@ -1,6 +1,4 @@
 import os
-import sys
-import time
 import requests
 import pandas as pd
 import numpy as np
@@ -59,7 +57,7 @@ def load_state():
 def save_state(state):
     """Lưu trạng thái tín hiệu đã báo vào file"""
     with open(STATE_FILE, 'w') as f:
-        json.dump(state, f)
+        json.dump(state, f, indent=2)
 
 def is_signal_reported(symbol, signal_type, timestamp):
     """Kiểm tra tín hiệu đã được báo chưa"""
@@ -106,22 +104,22 @@ def send_telegram(message):
 def find_symbol(search_term):
     print()
     print(f"🔍 Đang tìm {search_term} trên OKX...")
-    
+
     inst_types = ["SWAP", "SPOT"]
-    
+
     for inst_type in inst_types:
         try:
             params = {"instType": inst_type}
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            
+
             response = requests.get(OKX_INSTRUMENTS_URL, params=params, headers=headers, timeout=15)
             if response.status_code != 200:
                 continue
-                
+
             data = response.json()
             if data.get('code') != '0':
                 continue
-                
+
             for inst in data['data']:
                 inst_id = inst.get('instId', '')
                 if search_term in inst_id:
@@ -130,7 +128,7 @@ def find_symbol(search_term):
         except Exception as e:
             print(f"⚠️ Lỗi khi kiểm tra {inst_type}: {e}")
             continue
-    
+
     print(f"❌ Không tìm thấy {search_term} trên OKX")
     return None, None
 
@@ -247,7 +245,7 @@ def get_average(series, length, ma_type):
 def normalize(value, average):
     average = average.replace(0, np.nan)
     x = value / average
-    
+
     result = np.select(
         [
             x > 1.50,
@@ -261,7 +259,7 @@ def normalize(value, average):
         [1.00, 0.90, 0.80, 0.70, 0.60, 0.50, 0.25],
         default=0.10
     )
-    
+
     return pd.Series(result, index=value.index)
 
 # ============================================================
@@ -270,7 +268,7 @@ def normalize(value, average):
 
 def calculate_everex(df):
     df = df.copy()
-    
+
     open_ = df["open"]
     high = df["high"]
     low = df["low"]
@@ -349,7 +347,7 @@ def check_signal(df, symbol_name):
         'volume': None,
         'signal_timestamp': None
     }
-    
+
     if len(df) < 20:
         print(f"⚠️ {symbol_name}: Không đủ dữ liệu")
         return result
@@ -368,7 +366,7 @@ def check_signal(df, symbol_name):
     # In thông tin debug
     print(f"📊 TD2 (nến -2): {td2['timestamp']} | RROF_S={td2['RROF_S']:.2f}, SIGNAL={td2['SIGNAL']:.2f}")
     print(f"📊 TD1 (nến -1): {td1['timestamp']} | RROF_S={td1['RROF_S']:.2f}, SIGNAL={td1['SIGNAL']:.2f}")
-    
+
     # Lấy thông tin nến HT (đang mở)
     ht = df.iloc[-1]
     print(f"🕯 Nến HT (đang mở): {ht['timestamp']} | confirm={ht['confirm']}")
@@ -415,16 +413,16 @@ def check_signal(df, symbol_name):
 
 def build_message(results):
     signals = [r for r in results if r['signal'] is not None]
-    
+
     if not signals:
         return None
-    
+
     lines = []
     for s in signals:
-        # Định dạng: long xau price signal rrof
+        # Định dạng: log xau price signal rrof
         line = f"{s['signal'].lower()} {s['symbol']} {s['price']:.2f} {s['signal_line']:.2f} {s['rrof']:.2f}"
         lines.append(line)
-    
+
     return "\n".join(lines)
 
 # ============================================================
@@ -440,18 +438,18 @@ def main():
     print("==========================================")
 
     results = []
-    
+
     for search_term in SYMBOLS:
         print(f"\n{'='*70}")
         print(f"🔍 Đang quét: {search_term}")
         print('='*70)
-        
+
         found_symbol, inst_type = find_symbol(search_term)
-        
+
         if not found_symbol:
             print(f"❌ Không tìm thấy {search_term} trên OKX")
             continue
-            
+
         try:
             df = get_okx_candles(found_symbol, inst_type)
         except Exception as e:
@@ -473,7 +471,7 @@ def main():
         results.append(result)
 
     message = build_message(results)
-    
+
     if message:
         print()
         print("📨 Sending Telegram...")
