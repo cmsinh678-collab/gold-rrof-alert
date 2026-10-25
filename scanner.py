@@ -10,7 +10,7 @@ import json
 # ============================================================
 
 SYMBOLS = ["XAU-USDT", "ETH-USDT", "USOIL", "WTI"]
-TIMEFRAME = "5m"
+TIMEFRAME = "15m"
 CANDLE_LIMIT = 200
 
 # OKX API
